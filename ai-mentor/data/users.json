@@ -1,0 +1,9 @@
+{
+  "note": "在培新人名单。track 对应 data/paths/ 中的地图 id。",
+  "users": [
+    { "id": "chen_sy", "name": "陈思远", "track": "engineering", "cohort": "2025 春招", "joined_at": "2025-07-01" },
+    { "id": "lin_xy", "name": "林小雨", "track": "non_engineering", "cohort": "2025 春招", "joined_at": "2025-07-01" },
+    { "id": "zhao_m", "name": "赵敏", "track": "engineering", "cohort": "2025 春招", "joined_at": "2025-07-08" },
+    { "id": "demo", "name": "演示账号", "track": "engineering", "cohort": "演示", "joined_at": "2025-07-01" }
+  ]
+}

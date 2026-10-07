@@ -1,0 +1,48 @@
+{
+  "id": "non_engineering",
+  "name": "非研发岗办公环境自检",
+  "checks": [
+    {
+      "id": "documents",
+      "name": "文档目录存在",
+      "type": "path",
+      "path": "%USERPROFILE%\\Documents",
+      "required": true,
+      "fix": "手动创建 Documents 目录，所有对外交付物统一放这里，方便备份。"
+    },
+    {
+      "id": "desktop_clean",
+      "name": "桌面目录存在",
+      "type": "path",
+      "path": "%USERPROFILE%\\Desktop",
+      "required": false,
+      "fix": "无桌面目录通常意味着系统环境异常，请联系 IT。"
+    },
+    {
+      "id": "onedrive",
+      "name": "共享盘 / 云盘目录（示例）",
+      "type": "path",
+      "path": "%USERPROFILE%\\OneDrive",
+      "required": false,
+      "fix": "按公司要求登录共享盘或云盘客户端；没有云盘可忽略。"
+    },
+    {
+      "id": "intranet",
+      "name": "内网 OA 可达（示例地址，请替换）",
+      "type": "tcp",
+      "host": "10.0.0.1",
+      "port": 443,
+      "timeout": 2,
+      "required": false,
+      "fix": "先连上公司网络或 VPN。若地址已变更，请在 data/env_checks/non_engineering.json 里改成实际地址。"
+    },
+    {
+      "id": "proxy",
+      "name": "代理配置（如公司需要）",
+      "type": "env",
+      "var": "HTTP_PROXY",
+      "required": false,
+      "fix": "需要访问外部系统时，向 IT 索取代理地址。"
+    }
+  ]
+}

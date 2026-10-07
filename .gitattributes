@@ -1,0 +1,14 @@
+# 统一按 LF 存库，避免两台 Windows 机器之间出现整文件级别的换行差异
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则个别环境下会解析异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.xlsx binary
+*.docx binary

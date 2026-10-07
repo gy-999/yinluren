@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>引路人 · AI 导师</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">引</div>
+      <div>
+        <div class="brand-name">引路人</div>
+        <div class="brand-sub">AI 导师 · 新人培养</div>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <div class="nav-group">新人</div>
+      <button class="nav-item" data-view="ask"><span>💬</span>问答助手</button>
+      <button class="nav-item" data-view="path"><span>🗺️</span>成长地图</button>
+      <button class="nav-item" data-view="coach"><span>🎭</span>陪练室</button>
+      <button class="nav-item" data-view="review"><span>📝</span>作业批改</button>
+      <button class="nav-item" data-view="env"><span>🔧</span>环境自检</button>
+      <button class="nav-item" data-view="profile"><span>📈</span>我的档案</button>
+      <div class="nav-group">导师</div>
+      <button class="nav-item" data-view="dashboard"><span>🎯</span>导师看板</button>
+      <button class="nav-item" data-view="kb"><span>📚</span>知识库</button>
+      <button class="nav-item" data-view="settings"><span>⚙️</span>设置</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="mode-badge" class="mode-badge">…</div>
+      <div class="muted small" id="kb-stat"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="view-title">问答助手</h1>
+      <div class="topbar-right">
+        <label class="muted small">当前身份</label>
+        <select id="user-select"></select>
+      </div>
+    </header>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

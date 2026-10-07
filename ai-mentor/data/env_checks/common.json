@@ -1,0 +1,48 @@
+{
+  "id": "common",
+  "name": "通用办公环境自检",
+  "checks": [
+    {
+      "id": "home",
+      "name": "用户主目录可访问",
+      "type": "path",
+      "path": "%USERPROFILE%",
+      "required": true,
+      "fix": "确认当前账号能正常登录系统；如果主目录不存在，请联系 IT。"
+    },
+    {
+      "id": "temp",
+      "name": "临时目录可用",
+      "type": "path",
+      "path": "%TEMP%",
+      "required": true,
+      "fix": "清理磁盘空间后重试；若 TEMP 变量缺失，在系统环境变量中补上。"
+    },
+    {
+      "id": "documents",
+      "name": "文档目录存在",
+      "type": "path",
+      "path": "%USERPROFILE%\\Documents",
+      "required": false,
+      "fix": "手动创建该目录即可，用于存放个人工作文档。"
+    },
+    {
+      "id": "proxy",
+      "name": "代理配置（如公司需要）",
+      "type": "env",
+      "var": "HTTP_PROXY",
+      "required": false,
+      "fix": "如需访问外网，请向 IT 索取代理地址并配置 HTTP_PROXY / HTTPS_PROXY。"
+    },
+    {
+      "id": "intranet",
+      "name": "内网门户可达（示例地址，请替换）",
+      "type": "tcp",
+      "host": "10.0.0.1",
+      "port": 443,
+      "timeout": 2,
+      "required": false,
+      "fix": "先连上公司网络或 VPN，再确认门户地址是否已更新为贵司实际地址。"
+    }
+  ]
+}

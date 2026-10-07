@@ -1,0 +1,303 @@
+{
+  "id": "engineering",
+  "name": "研发新人 90 天成长地图",
+  "track": "engineering",
+  "description": "六关递进：先把环境跑通，再懂规范，再懂业务，最后能独立交付并对线上负责。每关考试达到 80 分才解锁下一关。",
+  "stages": [
+    {
+      "id": "e1",
+      "name": "第 1 关 · 环境与工具链",
+      "window": "Day 1-3",
+      "goal": "能独立跑通本地环境；遇到报错会先查自检清单，而不是直接问人",
+      "requires": [],
+      "learn": [
+        { "title": "新人生存手册：第一天到第一周该做什么", "type": "kb", "ref": "kb-gen-001", "minutes": 15 },
+        { "title": "开发环境搭建与自检", "type": "kb", "ref": "kb-eng-001", "minutes": 25 }
+      ],
+      "practice": [
+        { "title": "跑一遍「研发环境自检」，把失败项全部修掉", "type": "env_check", "ref": "engineering" },
+        { "title": "克隆一个仓库，提交一次符合规范的 commit", "type": "task", "ref": "" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e1q1",
+            "q": "克隆仓库时，代码应该放在哪里？",
+            "options": ["桌面，方便找", "下载目录", "统一的工作目录（如 %USERPROFILE%\\work）", "随你喜欢"],
+            "answer": 2,
+            "dimension": "discipline",
+            "explain": "统一工作目录是备份、迁移、权限管理的前提。放桌面或下载目录在换机或清理时极易丢失。"
+          },
+          {
+            "id": "e1q2",
+            "q": "装完 Git 后终端仍提示 'git' 不是内部或外部命令，最可能的原因是？",
+            "options": ["Git 装坏了，重装系统", "安装时没勾选 Add to PATH，或没有重开终端", "需要重启电脑", "需要管理员权限"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "PATH 未生效是最常见原因。重开终端让环境变量生效，仍不行则检查安装选项。"
+          },
+          {
+            "id": "e1q3",
+            "q": "遇到报错时，正确的第一步是？",
+            "options": ["直接群里 @导师", "完整复制报错原文，先自己搜一遍", "重启电脑", "把代码删了重写"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "先查再问是基本职业习惯。带上已试过的步骤去问，别人才愿意答。"
+          },
+          {
+            "id": "e1q4",
+            "q": "以下哪项是入职第一天必须完成、不能拖到第二天的？",
+            "options": ["读完所有历史文档", "确认邮箱/OA/IM 账号可登录", "写出第一个功能", "认识全公司的人"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "账号不可用会阻塞一切后续工作，必须当天解决。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e2",
+      "name": "第 2 关 · 代码规范与提交",
+      "window": "Day 3-7",
+      "goal": "能独立完成一次规范的提交与 PR，知道什么不该提交",
+      "requires": ["e1"],
+      "learn": [
+        { "title": "代码提交与分支规范", "type": "kb", "ref": "kb-eng-002", "minutes": 20 },
+        { "title": "高效求助：怎么问问题才有人愿意答", "type": "kb", "ref": "kb-gen-002", "minutes": 15 }
+      ],
+      "practice": [
+        { "title": "提交一个 PR，按模板写清改了什么/为什么/怎么验证/风险", "type": "task", "ref": "" },
+        { "title": "用「代码评审 / 方案答辩」评分标准做一次自评", "type": "coach", "ref": "sc-eng-review" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e2q1",
+            "q": "分支命名 feat/ORD-1024-优惠叠加 中，ORD-1024 通常代表？",
+            "options": ["作者工号", "需求或缺陷单号", "随机数", "版本号"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "带上需求号，才能从代码追溯到需求背景和验收标准。"
+          },
+          {
+            "id": "e2q2",
+            "q": "关于提交信息，下面哪种是规范的？",
+            "options": ["修改代码", "update", "feat(order): 支持优惠叠加策略", "111"],
+            "answer": 2,
+            "dimension": "discipline",
+            "explain": "格式为 类型(范围): 做了什么，让人一眼看懂这次提交的意图。"
+          },
+          {
+            "id": "e2q3",
+            "q": "一个 PR 建议控制在多少行以内？",
+            "options": ["100 行", "400 行", "2000 行", "不限"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "超过 400 行，评审人的注意力和发现问题的能力会急剧下降。"
+          },
+          {
+            "id": "e2q4",
+            "q": "顺手改了格式、升级了依赖，应该怎么处理？",
+            "options": ["一起提交，省事", "单独开一个 PR", "写在评论里说明", "不用管"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "夹带改动会让评审人无法判断风险边界，必须拆开。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e3",
+      "name": "第 3 关 · 读懂业务与系统",
+      "window": "Week 2-3",
+      "goal": "能画出自己模块的上下游关系图，说清它在业务中的价值",
+      "requires": ["e2"],
+      "learn": [
+        { "title": "需求评审与技术方案流程", "type": "kb", "ref": "kb-eng-003", "minutes": 25 },
+        { "title": "会议与纪要规范", "type": "kb", "ref": "kb-gen-003", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "画出你负责模块的上下游关系图，找导师确认", "type": "task", "ref": "" },
+        { "title": "练习「需求澄清会」陪练场景", "type": "coach", "ref": "sc-eng-requirement" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e3q1",
+            "q": "需求评审会上，研发最核心的职责是？",
+            "options": ["记录需求，回去做", "当场确认目标、范围、验收标准、时间点", "评估 UI 好不好看", "提出反对意见"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "这四件事没有确认清楚就开工，返工成本最高。"
+          },
+          {
+            "id": "e3q2",
+            "q": "需求文档里没有写清验收标准，你应该？",
+            "options": ["按自己理解先做", "要求补充书面说明，而不是先开工再返工", "等别人问", "跳过这个需求"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "你有权要求澄清。先开工再返工，浪费的是整个团队的时间。"
+          },
+          {
+            "id": "e3q3",
+            "q": "会议纪要必须包含的三要素是？",
+            "options": ["时间、地点、参会人", "结论、待办（谁/做什么/何时）、分歧", "议题、讨论、散会", "背景、过程、感想"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "没有结论和明确待办的纪要，等于没开过会。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e4",
+      "name": "第 4 关 · 技术方案设计",
+      "window": "Week 4-6",
+      "goal": "能独立写出一份包含方案对比、边界处理与回滚策略的技术方案",
+      "requires": ["e3"],
+      "learn": [
+        { "title": "代码评审与方案答辩评分标准", "type": "rubric", "ref": "code-review", "minutes": 15 },
+        { "title": "需求评审与技术方案流程", "type": "kb", "ref": "kb-eng-003", "minutes": 15 }
+      ],
+      "practice": [
+        { "title": "写一份技术方案，用「代码评审 / 方案答辩」标准自评后再交", "type": "task", "ref": "" },
+        { "title": "练习「代码评审答辩」陪练场景", "type": "coach", "ref": "sc-eng-review" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e4q1",
+            "q": "技术方案里必须出现、最容易被新人漏掉的一项是？",
+            "options": ["技术选型的历史", "如果出问题怎么回滚", "代码行数估算", "团队成员分工"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "没有回滚方案的方案不算方案。上线出问题时，回滚是唯一确定的止损手段。"
+          },
+          {
+            "id": "e4q2",
+            "q": "方案对比应该至少包含几个候选方案？",
+            "options": ["1 个（选定方案）", "2 个及以上，并说明放弃理由", "越多越好", "不需要对比"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "只给一个方案等于没有取舍。至少给出一个替代方案及放弃理由。"
+          },
+          {
+            "id": "e4q3",
+            "q": "涉及数据变更时，方案中必须说明？",
+            "options": ["数据量大小", "兼容策略与灰度方式", "数据库品牌", "备份频率"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "历史数据兼容和灰度方式是数据类改动最容易出事故的地方。"
+          },
+          {
+            "id": "e4q4",
+            "q": "评审人反对你的方案时，最加分的回应是？",
+            "options": ["坚持自己的方案", "沉默照改", "先确认对方顾虑，再给证据或明确让步", "找领导裁决"],
+            "answer": 2,
+            "dimension": "communication",
+            "explain": "对抗和顺从都不解决问题。确认顾虑 + 证据/让步才能推动收敛。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e5",
+      "name": "第 5 关 · 独立交付一个小需求",
+      "window": "Week 6-10",
+      "goal": "从需求澄清到上线全流程独立走通一次，并有可验证的结果",
+      "requires": ["e4"],
+      "learn": [
+        { "title": "需求分析作业批改标准", "type": "rubric", "ref": "requirement-analysis", "minutes": 10 },
+        { "title": "周报 / 进度同步批改标准", "type": "rubric", "ref": "weekly-report", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "独立承接并上线一个需求，产出数据结果", "type": "task", "ref": "" },
+        { "title": "练习「向导师汇报周报」陪练场景", "type": "coach", "ref": "sc-common-weekly" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e5q1",
+            "q": "周报里最好的表达方式是？",
+            "options": ["我这周参与了很多工作", "完成了 X，结果是 Y，数据是 Z", "学习了很多新知识", "继续推进中"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "以结果和数据说话，而不是以参与度说话。"
+          },
+          {
+            "id": "e5q2",
+            "q": "发现项目有阻塞风险，你应该？",
+            "options": ["自己扛着，不想显得能力不行", "写清风险、影响、需要谁在什么时间点支持", "等别人发现", "降低交付标准"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "风险暴露越早，解决成本越低。报喜不报忧是新人最常见的失误。"
+          },
+          {
+            "id": "e5q3",
+            "q": "验收标准最好的形态是？",
+            "options": ["感觉没问题", "功能正常", "转化率不低于基线、导出耗时小于 5 秒等可量化指标", "用户说好"],
+            "answer": 2,
+            "dimension": "business",
+            "explain": "可量化、可复现的标准才能用来判断做完没做完。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "e6",
+      "name": "第 6 关 · 线上意识与稳定性",
+      "window": "Week 10-13",
+      "goal": "具备基本的线上风险意识，知道哪些红线绝对不能碰",
+      "requires": ["e5"],
+      "learn": [
+        { "title": "线上问题处理与值班规范", "type": "kb", "ref": "kb-eng-004", "minutes": 25 }
+      ],
+      "practice": [
+        { "title": "参与一次线上问题处理，输出一份复盘文档", "type": "task", "ref": "" },
+        { "title": "练习「线上事故复盘」陪练场景", "type": "coach", "ref": "sc-eng-incident" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "e6q1",
+            "q": "线上出问题时，正确的第一优先级是？",
+            "options": ["找到根本原因", "止血：先回滚/降级/切流量，让用户能用", "写事故报告", "追究责任人"],
+            "answer": 1,
+            "dimension": "professional",
+            "explain": "止血优先，找原因其次。让用户先能用，比搞清楚为什么更重要。"
+          },
+          {
+            "id": "e6q2",
+            "q": "以下哪一项是绝对红线？",
+            "options": ["在事故群里同步现象和影响", "为快速验证直接改线上配置", "保存现场日志", "拉群同步进展"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "未经授权改动线上配置，无论技术水平如何，都按事故处理。"
+          },
+          {
+            "id": "e6q3",
+            "q": "服务异常需要重启前，必须先做什么？",
+            "options": ["直接重启", "先保存日志、堆栈、时间点等现场信息", "通知老板", "查代码"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "重启会销毁现场，之后再想定位根因就无从下手了。"
+          },
+          {
+            "id": "e6q4",
+            "q": "复盘文档里的改进项，下面哪条是合格的？",
+            "options": ["以后多加小心", "提高代码质量", "本周五前把生产脱敏样本纳入单测基线（负责人：我）", "加强团队沟通"],
+            "answer": 2,
+            "dimension": "discipline",
+            "explain": "改进项必须有具体动作、负责人和时间点，否则等于没写。"
+          }
+        ]
+      }
+    }
+  ]
+}

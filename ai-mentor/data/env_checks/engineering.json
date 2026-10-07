@@ -1,0 +1,60 @@
+{
+  "id": "engineering",
+  "name": "研发环境自检",
+  "_note": "命令检查项会真实执行。请按贵司实际工具链增删；内网地址请替换成真实地址。",
+  "checks": [
+    {
+      "id": "git",
+      "name": "Git 已安装",
+      "type": "command",
+      "cmd": "git --version",
+      "expect": "git version",
+      "required": true,
+      "fix": "下载安装 Git for Windows，安装时勾选「Add to PATH」，装完重新打开终端。"
+    },
+    {
+      "id": "node",
+      "name": "Node.js 已安装",
+      "type": "command",
+      "cmd": "node --version",
+      "expect": "v",
+      "required": false,
+      "fix": "安装 Node.js LTS 版本；建议同时配置国内镜像源。"
+    },
+    {
+      "id": "python",
+      "name": "Python 已安装",
+      "type": "command",
+      "cmd": "python --version",
+      "expect": "python",
+      "required": false,
+      "fix": "安装 Python 3.10+，安装时勾选 Add Python to PATH。"
+    },
+    {
+      "id": "docker",
+      "name": "Docker 已安装",
+      "type": "command",
+      "cmd": "docker --version",
+      "expect": "docker",
+      "required": false,
+      "fix": "安装 Docker Desktop；若公司不允许本地 Docker，可忽略此项。"
+    },
+    {
+      "id": "workspace",
+      "name": "工作代码目录存在",
+      "type": "path",
+      "path": "%USERPROFILE%\\work",
+      "required": true,
+      "fix": "创建 %USERPROFILE%\\work 目录，并在这里克隆项目仓库（不要放在桌面或下载目录）。"
+    },
+    {
+      "id": "git_config",
+      "name": "Git 用户信息已配置",
+      "type": "command",
+      "cmd": "git config --get user.email",
+      "expect": "@",
+      "required": true,
+      "fix": "执行：git config --global user.name \"你的名字\" 与 git config --global user.email \"你的公司邮箱\"。"
+    }
+  ]
+}

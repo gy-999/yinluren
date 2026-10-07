@@ -1,0 +1,263 @@
+{
+  "id": "non_engineering",
+  "name": "非研发新人 90 天成长地图",
+  "track": "non_engineering",
+  "description": "六关递进：先把工具和信息渠道理顺，再懂业务，再练沟通基本功，最后能独立承接并对结果负责。",
+  "stages": [
+    {
+      "id": "n1",
+      "name": "第 1 关 · 办公环境与信息渠道",
+      "window": "Day 1-2",
+      "goal": "所有工具、账号、信息渠道就绪，知道遇到什么事找谁",
+      "requires": [],
+      "learn": [
+        { "title": "新人生存手册：第一天到第一周该做什么", "type": "kb", "ref": "kb-gen-001", "minutes": 15 }
+      ],
+      "practice": [
+        { "title": "跑一遍「非研发岗办公环境自检」", "type": "env_check", "ref": "non_engineering" },
+        { "title": "把常用的三个信息渠道（群、文档库、工单）收藏到浏览器书签栏", "type": "task", "ref": "" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n1q1",
+            "q": "入职第一天必须当天解决、不能拖到第二天的是？",
+            "options": ["读完所有业务文档", "确认邮箱、OA、IM 账号都可正常登录", "认识所有同事", "完成第一份方案"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "账号不通会阻塞后续一切工作，必须当天找 IT 解决。"
+          },
+          {
+            "id": "n1q2",
+            "q": "对外交付的文档应该统一放在哪里？",
+            "options": ["桌面，找起来快", "下载目录", "个人文档目录并按项目分文件夹", "微信文件传输助手"],
+            "answer": 2,
+            "dimension": "discipline",
+            "explain": "统一归档是协作和交接的基本前提。放桌面和聊天记录里，换机或离职时全部丢失。"
+          },
+          {
+            "id": "n1q3",
+            "q": "遇到不确定该找谁的问题，最有效的做法是？",
+            "options": ["在多个群里同时发问", "先问导师或对接人，明确责任边界后再推进", "等着别人主动来教", "自己猜一个做法先干"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "先确认责任人，避免在群里反复踢皮球浪费时间。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "n2",
+      "name": "第 2 关 · 业务与产品知识",
+      "window": "Day 2-6",
+      "goal": "能说清公司靠什么赚钱、你负责的业务在其中的位置",
+      "requires": ["n1"],
+      "learn": [
+        { "title": "会议与纪要规范", "type": "kb", "ref": "kb-gen-003", "minutes": 15 },
+        { "title": "高效求助：怎么问问题才有人愿意答", "type": "kb", "ref": "kb-gen-002", "minutes": 15 }
+      ],
+      "practice": [
+        { "title": "用一句话向朋友解释公司的主营业务（不许用行话）", "type": "task", "ref": "" },
+        { "title": "画出你负责业务的客户旅程：从获客到交付到续费", "type": "task", "ref": "" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n2q1",
+            "q": "理解业务最快的捷径是？",
+            "options": ["读公司官网", "读团队最近三个月的周报和会议纪要", "背组织架构图", "看行业分析报告"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "最近的周报和纪要反映的是团队真实在操心的事，比任何宣传材料都准。"
+          },
+          {
+            "id": "n2q2",
+            "q": "会议纪要的三要素是？",
+            "options": ["时间、地点、人", "结论、待办（谁/做什么/何时）、分歧", "议题、讨论、散会", "背景、过程、总结"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "没有结论和待办的纪要，会后没人知道该干什么。"
+          },
+          {
+            "id": "n2q3",
+            "q": "向同事提问时，最影响对方是否愿意回答的因素是？",
+            "options": ["问题的难度", "你有没有带上已经试过的步骤", "提问的时间", "对方的职位"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "带上「已试」说明你尊重对方的时间，这是最有效的提问礼仪。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "n3",
+      "name": "第 3 关 · 客户沟通基本功",
+      "window": "Week 2-3",
+      "goal": "掌握接情绪、复述诉求、给边界内承诺的表达方式",
+      "requires": ["n2"],
+      "learn": [
+        { "title": "客户沟通五步法", "type": "kb", "ref": "kb-biz-001", "minutes": 25 },
+        { "title": "客户 / 跨部门沟通评分标准", "type": "rubric", "ref": "client-communication", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "练习「客户投诉处理」陪练场景，直到拿到 80 分以上", "type": "coach", "ref": "sc-biz-client" },
+        { "title": "练习「跨部门协作卡壳」陪练场景", "type": "coach", "ref": "sc-biz-cross" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n3q1",
+            "q": "客户情绪激动时，你第一句话应该说？",
+            "options": ["您先别激动", "换成是我也会很生气", "这是流程规定的", "让我查一下"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "先接情绪，再处理问题。「别激动」只会让对方更激动。"
+          },
+          {
+            "id": "n3q2",
+            "q": "客户要求的东西你做不到，正确的做法是？",
+            "options": ["先答应下来，回去再想办法", "说「我尽量」", "说明限制并给出替代方案和时间点", "直接拒绝"],
+            "answer": 2,
+            "dimension": "communication",
+            "explain": "「我尽量」是最伤信任的回答。要给出清晰边界 + 可选方案 + 明确时间点。"
+          },
+          {
+            "id": "n3q3",
+            "q": "关于赔偿金额，正确的处理方式是？",
+            "options": ["当场答应客户的要求", "按流程记录诉求，明确告知需要授权后回复", "让客户自己找领导", "直接说没有赔偿"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "赔偿属于超出你权限的事项，当场承诺会造成无法兑现的后果。"
+          },
+          {
+            "id": "n3q4",
+            "q": "沟通结束后，防止后续扯皮的关键动作是？",
+            "options": ["口头再见", "当场总结共识与待办，会后书面确认并抄送双方负责人", "让对方主动联系你", "把聊天记录截图存本地"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "收口留痕是专业度的体现，也是保护自己的方式。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "n4",
+      "name": "第 4 关 · 文档与汇报规范",
+      "window": "Week 3-5",
+      "goal": "写出的周报和方案能让别人 30 秒抓住重点",
+      "requires": ["n3"],
+      "learn": [
+        { "title": "周报 / 进度同步批改标准", "type": "rubric", "ref": "weekly-report", "minutes": 10 },
+        { "title": "需求分析作业批改标准", "type": "rubric", "ref": "requirement-analysis", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "写一份周报，用「周报批改标准」自查后再交", "type": "task", "ref": "" },
+        { "title": "练习「向导师汇报周报」陪练场景", "type": "coach", "ref": "sc-common-weekly" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n4q1",
+            "q": "周报的第一句话最应该写什么？",
+            "options": ["这周很忙", "本周最重要的产出和结果", "下周计划", "遇到的问题"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "领导只有 30 秒，结论必须先出现在第一句。"
+          },
+          {
+            "id": "n4q2",
+            "q": "下面哪种写法最有说服力？",
+            "options": ["参与了客户回访工作", "完成了 30 家客户回访，梳理出 5 类高频问题，其中 2 类已推动产品修复", "学习了客户沟通技巧", "继续跟进中"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "有数量、有产出、有结果闭环，才叫结果导向。"
+          },
+          {
+            "id": "n4q3",
+            "q": "下周计划要写到什么颗粒度？",
+            "options": ["继续推进相关事项", "事项 + 时间点 + 完成标准三要素齐全", "列出十个方向", "不用写"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "没有完成标准的计划无法验收，也无法判断你是否卡住。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "n5",
+      "name": "第 5 关 · 独立承接一个小任务",
+      "window": "Week 5-9",
+      "goal": "从头到尾独立负责一件事，并对结果负责",
+      "requires": ["n4"],
+      "learn": [
+        { "title": "客户沟通五步法", "type": "kb", "ref": "kb-biz-001", "minutes": 15 },
+        { "title": "新人生存手册：第一天到第一周该做什么", "type": "kb", "ref": "kb-gen-001", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "独立负责一个客户或一个小项目，产出可量化的结果", "type": "task", "ref": "" },
+        { "title": "把这次过程中的坑整理成一篇知识库条目", "type": "task", "ref": "" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n5q1",
+            "q": "任务进行中发现可能延期，你应该？",
+            "options": ["自己加班扛过去，不告诉别人", "尽早同步风险、原因和补救方案", "等截止日再说", "降低交付标准"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "风险早说成本低。晚说会把整个团队拖进被动。"
+          },
+          {
+            "id": "n5q2",
+            "q": "衡量一个任务做完没有，最好的依据是？",
+            "options": ["自己的感觉", "事先约定的可量化验收标准", "同事的评价", "花了多少时间"],
+            "answer": 1,
+            "dimension": "business",
+            "explain": "验收标准要在开工前就约定好，否则双方理解必然不一致。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "n6",
+      "name": "第 6 关 · 跨部门协作与复盘",
+      "window": "Week 9-13",
+      "goal": "能在没有直接管辖权的情况下推动事情落地",
+      "requires": ["n5"],
+      "learn": [
+        { "title": "客户沟通五步法", "type": "kb", "ref": "kb-biz-001", "minutes": 15 },
+        { "title": "会议与纪要规范", "type": "kb", "ref": "kb-gen-003", "minutes": 10 }
+      ],
+      "practice": [
+        { "title": "主导一次跨部门对齐会，输出纪要与待办并跟踪闭环", "type": "task", "ref": "" },
+        { "title": "练习「跨部门协作卡壳」陪练场景，直到 85 分以上", "type": "coach", "ref": "sc-biz-cross" }
+      ],
+      "exam": {
+        "pass_score": 80,
+        "questions": [
+          {
+            "id": "n6q1",
+            "q": "推动平级同事配合时，最有效的切入点是？",
+            "options": ["强调自己的需求很紧急", "先理解对方处境，再把需求翻译成对方能接受的最小成本方案", "找对方领导施压", "反复催促"],
+            "answer": 1,
+            "dimension": "communication",
+            "explain": "平级协作靠的是降低对方成本，不是强调自己的紧急。"
+          },
+          {
+            "id": "n6q2",
+            "q": "跨部门沟通结束后，必须做的一件事是？",
+            "options": ["请对方吃饭", "书面确认结论、待办、责任人与时间点", "在群里感谢", "立刻开始执行"],
+            "answer": 1,
+            "dimension": "discipline",
+            "explain": "没有留痕的口头共识，一周后就会变成各说各话。"
+          }
+        ]
+      }
+    }
+  ]
+}
