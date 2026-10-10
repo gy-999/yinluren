@@ -8,15 +8,18 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
+import re
 import socket
 import subprocess
 import uuid
 from datetime import datetime
 
 from core import (
-    DATA_DIR, KB, LLM_CLIENT, SETTINGS, STORE, load_dir_json, load_json,
-    save_json, sensitive_hit, is_overdue, tokenize, today_str, validate_data, _as_list,
+    DATA_DIR, FILES_DIR, KB, LLM_CLIENT, SETTINGS, STORE, load_dir_json, load_json,
+    load_projects, save_projects, load_users_file, auth_enabled, save_json,
+    sensitive_hit, is_overdue, tokenize, today_str, validate_data, _as_list,
 )
 
 MIN_PASS_DEFAULT = 80
@@ -31,9 +34,11 @@ def meta() -> dict:
     return {
         "product": "引路人 · AI 导师",
         "tracks": sorted({p.get("track", "general") for p in paths}) or ["general"],
+        "projects": load_projects(),
         "dimensions": dimensions(),
         "users": users,
         "llm": LLM_CLIENT.status,
+        "auth_required": auth_enabled(),
         "issues": issues,
         "errors": len([i for i in issues if i["level"] == "error"]),
         "knowledge": {
@@ -60,7 +65,25 @@ def ensure_users() -> None:
     seed = load_json(DATA_DIR / "users.json", {"users": []}).get("users") or []
     for u in seed:
         STORE.upsert_user(u.get("id"), u.get("name"), u.get("track", "general"),
-                          u.get("cohort", ""), u.get("joined_at", ""))
+                          u.get("cohort", ""), u.get("joined_at", ""),
+                          str(u.get("role") or "newcomer"))
+
+
+def login(uid: str, pin: str) -> dict:
+    """选人 + PIN 登录。PIN 在 users.json 里按人配置；没有任何人配置时全站不启用。
+    登录成功返回 token 与角色，之后所有请求带 X-Token 头，且只能以本人身份操作。"""
+    users = {u["id"]: u for u in load_users_file()}
+    u = users.get(uid or "")
+    if not u:
+        return {"error": "用户不存在"}
+    want = str(u.get("pin") or "").strip()
+    if want and str(pin or "").strip() != want:
+        return {"error": "PIN 不正确"}
+    role = str(u.get("role") or "newcomer")
+    token = STORE.create_session(uid, role)
+    return {"ok": True, "token": token,
+            "user": {"id": u["id"], "name": u.get("name", uid),
+                     "track": u.get("track", ""), "role": role}}
 
 
 # ================================================================ ② 知识问答
@@ -108,7 +131,8 @@ def _record_candidate(question: str) -> None:
     STORE.add_candidate(question, json.dumps(fp, ensure_ascii=False))
 
 
-def ask(user: str, question: str, anonymous: bool = False, track: str | None = None) -> dict:
+def ask(user: str, question: str, anonymous: bool = False, track: str | None = None,
+        project: str | None = None) -> dict:
     question = (question or "").strip()
     if not question:
         return {"error": "问题不能为空"}
@@ -119,7 +143,7 @@ def ask(user: str, question: str, anonymous: bool = False, track: str | None = N
     strong_th = float(rcfg.get("strong_threshold", 1.6))
     min_cov = float(rcfg.get("min_coverage", 0.30))
 
-    hits = KB.search(question, top_k=top_k)
+    hits = KB.search(question, top_k=top_k, project=(project or None))
     top_score = hits[0]["score"] if hits else 0.0
     top_cov = hits[0]["coverage"] if hits else 0.0
     # 覆盖率低 = 问句里很多词在文档里根本找不到，此时要求更高的分数才敢回答
@@ -152,9 +176,9 @@ def ask(user: str, question: str, anonymous: bool = False, track: str | None = N
                 "sources": [], "confidence": top_score, "mode": "escalate",
                 "contact": SETTINGS["mentor"].get("escalate_contact", "导师")}
 
-    # 命中已发布 FAQ → 计数
+    # 命中已发布 FAQ → 计数（存 SQLite，不写回内容文件）
     if hits[0]["kind"] == "faq":
-        KB.bump_faq_hit(hits[0]["id"])
+        STORE.bump_faq_hit(hits[0]["id"])
 
     context = _build_context(hits)
     answer, mode = _compose_answer(question, hits, context, strong_th, top_score, kind, hit_word)
@@ -169,6 +193,7 @@ def ask(user: str, question: str, anonymous: bool = False, track: str | None = N
         "escalated": False,
         "answer": answer,
         "mode": mode,
+        "project": project or "",
         "confidence": top_score,
         "coverage": top_cov,
         "strong": strong,
@@ -328,8 +353,10 @@ def exam_questions(path_id: str, stage_id: str) -> list:
         return []
     for s in p.get("stages") or []:
         if s.get("id") == stage_id:
-            # 不下发答案
-            return [{k: v for k, v in q.items() if k != "answer"}
+            # 不下发答案与解析：解析常在复述正确答案，懂 devtools 的人可以提前偷看。
+            # 解析只在交卷后的 details 里返回（见 submit_exam）。
+            skip = ("answer", "explain")
+            return [{k: v for k, v in q.items() if k not in skip}
                     for q in (s.get("exam") or {}).get("questions") or []]
     return []
 
@@ -499,8 +526,8 @@ def coach_finish(session_id: str) -> dict:
     user_text = "\n".join(t["content"] for t in sess["turns"] if t["role"] == "user")
 
     if LLM_CLIENT.enabled and user_text.strip():
-        scored = _llm_score_items(rubric, user_text, "陪练对话")
-        mode = "llm"
+        scored, llm_ok = _llm_score_items(rubric, user_text, "陪练对话")
+        mode = "llm" if llm_ok else "heuristic"
     else:
         scored = _heuristic_score_items(items, user_text)
         mode = "heuristic"
@@ -557,7 +584,10 @@ def _heuristic_score_items(items: list, text: str) -> list:
     return out
 
 
-def _llm_score_items(rubric: dict, text: str, kind: str) -> list:
+def _llm_score_items(rubric: dict, text: str, kind: str) -> tuple[list, bool]:
+    """返回 (评分项, 是否真的走了模型)。模型调用失败时降级为启发式，
+    但必须把这件事如实上报——否则新人会以为低分是模型给的，
+    其实只是启发式没识别到信号，批改的公信力就这么丢的。"""
     items = rubric.get("items") or []
     schema_desc = json.dumps([{"id": i.get("id"), "name": i.get("name"),
                                "levels": i.get("levels", {})} for i in items],
@@ -573,7 +603,7 @@ def _llm_score_items(rubric: dict, text: str, kind: str) -> list:
                           temperature=0.1, max_tokens=900)
     parsed = _parse_json_array(out) if out else None
     if not parsed:
-        return _heuristic_score_items(items, text)
+        return _heuristic_score_items(items, text), False
     by_id = {str(p.get("id")): p for p in parsed if isinstance(p, dict)}
     result = []
     for it in items:
@@ -589,7 +619,7 @@ def _llm_score_items(rubric: dict, text: str, kind: str) -> list:
             "uncertain": False, "needs_review": False,
             "levels": it.get("levels", {}),
         })
-    return result
+    return result, True
 
 
 def _parse_json_array(text: str):
@@ -649,8 +679,8 @@ def review(rubric_id: str, text: str, user: str = "", title: str = "") -> dict:
         return {"error": "提交内容不能为空"}
 
     if LLM_CLIENT.enabled:
-        items = _llm_score_items(rubric, text, f"作业批改：{title or rubric.get('name')}")
-        mode = "llm"
+        items, llm_ok = _llm_score_items(rubric, text, f"作业批改：{title or rubric.get('name')}")
+        mode = "llm" if llm_ok else "heuristic"
     else:
         items = _heuristic_score_items(rubric.get("items") or [], text)
         mode = "heuristic"
@@ -668,6 +698,437 @@ def review(rubric_id: str, text: str, user: str = "", title: str = "") -> dict:
         "summary": _coach_summary(total),
         "rubric": {"id": rubric.get("id"), "name": rubric.get("name")},
     }
+
+
+# ================================================================ ⑨ 周报
+
+def weekly_submit(user: str, content: str, week_label: str = "") -> dict:
+    """提交周报：复用作业批改引擎按 weekly-report 标准自动批改，存档并计入成长记录。
+    批改结果只对周报本身负责——分数进入档案雷达（review 事件），但周报主要价值是
+    让导师不用逐个追问"这周干了啥"。"""
+    user = (user or "").strip() or "demo"
+    content = (content or "").strip()
+    if not content:
+        return {"error": "周报内容不能为空"}
+    if not week_label.strip():
+        iso = datetime.now().isocalendar()
+        week_label = f"{iso[0]} 年第 {iso[1]} 周"
+    week_label = week_label.strip()[:40]
+
+    rv = review("weekly-report", content, user, title=week_label)
+    if rv.get("error"):                       # rubric 缺失时不拦着提交，保底存档
+        rv = {}
+    score = rv.get("total")
+    mode = rv.get("mode", "none")
+    wid = STORE.add_weekly(user, week_label, content, score, mode, rv)
+    return {"ok": True, "id": wid, "week_label": week_label,
+            "score": score, "mode": mode, "review": rv}
+
+
+def weekly_list(user: str) -> dict:
+    """我的周报历史。"""
+    rows = STORE.weeklies(user)
+    return {"mine": [{"id": r["id"], "week_label": r["week_label"],
+                      "score": r["score"], "mode": r["mode"],
+                      "content": r["content"], "review": r["review"],
+                      "created_at": r["created_at"]} for r in rows]}
+
+
+def weekly_all(limit: int = 100) -> dict:
+    """全员周报（导师视角，双向可见原则）。"""
+    rows = STORE.weeklies(None, limit)
+    names = {u["id"]: u["name"] for u in STORE.users()}
+    return {"all": [{"id": r["id"], "user": r["user"],
+                     "user_name": names.get(r["user"], r["user"]),
+                     "week_label": r["week_label"], "score": r["score"],
+                     "mode": r["mode"], "content": r["content"],
+                     "review": r["review"], "created_at": r["created_at"]}
+                    for r in rows]}
+
+
+# ================================================================ ⑩ 任务中心
+
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024      # 单请求附件总量上限 200MB（局域网工具够用）
+
+
+def _save_uploads(kind: str, owner_id: int, files: list) -> None:
+    """files: [{filename, content(bytes), ctype}]。磁盘只存 uuid 文件名，原始文件名进库。"""
+    if not files:
+        return
+    FILES_DIR.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        content = f.get("content") or b""
+        filename = (f.get("filename") or "attachment").strip() or "attachment"
+        if not content:
+            continue
+        ext = re.sub(r"[^.\w]", "", os.path.splitext(filename)[1])[:10]
+        stored = uuid.uuid4().hex + ext
+        (FILES_DIR / stored).write_bytes(content)
+        mime = f.get("ctype") or (mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        STORE.add_upload(kind, owner_id, filename, stored, len(content), mime)
+
+
+def _upload_view(rows: list) -> list:
+    return [{"id": r["id"], "filename": r["filename"], "size": r["size"],
+             "mime": r["mime"]} for r in rows]
+
+
+def task_create(title: str, description: str, creator: str,
+                assignee: str = "", items=None, files=None) -> dict:
+    """导师发布任务：按需求拆成多个子项（问题回答 / 需求 / 其他），可带资料附件。"""
+    title = (title or "").strip()
+    if not title:
+        return {"error": "任务标题不能为空"}
+    files = files or []
+    total = sum(len(f.get("content") or b"") for f in files)
+    if total > MAX_UPLOAD_BYTES:
+        return {"error": "附件总量超过 200MB 上限"}
+    creator = (creator or "").strip() or "demo"
+    assignee = (assignee or "").strip()
+    tid = STORE.add_task(title, (description or "").strip(), creator, assignee)
+    n_items = 0
+    for it in (items or []):
+        it = it or {}
+        t = str(it.get("title") or "").strip()
+        if not t:
+            continue
+        itype = str(it.get("itype") or "general")
+        if itype not in ITEM_TYPES:
+            itype = "general"
+        STORE.add_task_item(tid, t[:120], itype, str(it.get("content") or "").strip())
+        n_items += 1
+    _save_uploads("task", tid, files)
+    STORE.add_event(creator, "task", f"task:{tid}", None,
+                    {"title": title, "assignee": assignee, "files": len(files),
+                     "items": n_items})
+    return {"ok": True, "id": tid}
+
+
+def tasks_list(user: str = "") -> dict:
+    """任务列表：任务 + 资料附件 + 子项（每个子项带附件、反馈、当前用户完成状态）。"""
+    user = (user or "").strip()
+    names = {u["id"]: u["name"] for u in STORE.users()}
+    out = []
+    for t in STORE.tasks_all():
+        items = []
+        done_count = 0
+        for it in STORE.task_items(t["id"]):
+            fbs = STORE.feedbacks_for_item(it["id"])
+            done_users = [f["user"] for f in fbs]
+            my_done = user in done_users
+            if my_done:
+                done_count += 1
+            items.append({
+                "id": it["id"], "title": it["title"], "itype": it["itype"],
+                "content": it["content"],
+                "files": _upload_view(STORE.uploads_for("item", it["id"])),
+                "feedbacks": [{"id": f["id"], "user": f["user"],
+                               "user_name": names.get(f["user"], f["user"]),
+                               "content": f["content"], "status": f["status"],
+                               "note": f["note"], "created_at": f["created_at"],
+                               "files": _upload_view(STORE.uploads_for("feedback", f["id"]))}
+                              for f in fbs],
+                "done_users": done_users,
+                "my_done": my_done,
+            })
+        total_items = len(items)
+        out.append({
+            "id": t["id"], "title": t["title"], "description": t["description"],
+            "creator": t["creator"], "creator_name": names.get(t["creator"], t["creator"]),
+            "assignee": t["assignee"],
+            "assignee_name": names.get(t["assignee"], "") if t["assignee"] else "",
+            "created_at": t["created_at"],
+            "files": _upload_view(STORE.uploads_for("task", t["id"])),
+            "items": items,
+            "items_total": total_items,
+            "items_my_done": done_count,
+            "my_done": total_items == 0 or done_count == total_items,
+        })
+    return {"tasks": out}
+
+
+def task_feedback(task_id: int, item_id: int, user: str, content: str, files=None) -> dict:
+    """新人按子项反馈：每个子项单独提交文字与附件，导师逐项确认。"""
+    t = STORE.get_task(int(task_id or 0))
+    if not t:
+        return {"error": "任务不存在"}
+    it = STORE.get_task_item(int(item_id or 0))
+    if not it or it["task_id"] != t["id"]:
+        return {"error": "子项不存在"}
+    user = (user or "").strip() or "demo"
+    content = (content or "").strip()
+    files = files or []
+    if not content and not files:
+        return {"error": "反馈内容不能为空（文字或附件至少有一项）"}
+    total = sum(len(f.get("content") or b"") for f in files)
+    if total > MAX_UPLOAD_BYTES:
+        return {"error": "附件总量超过 200MB 上限"}
+    fid = STORE.add_feedback(int(task_id), int(item_id), user, content)
+    _save_uploads("feedback", fid, files)
+    # 「问题」类子项的反馈本身就是写给导师的问题：自动进导师的待回复队列，
+    # 导师答复后经 ref 回流到这条反馈的点评里，新人无需跳去问答页。
+    if it.get("itype") == "question":
+        STORE.add_escalation(
+            user,
+            f"【任务提问】{t['title']} / {it['title']}：{content or '（见附件）'}",
+            "任务子项提问", ref=f"feedback:{fid}")
+    STORE.add_event(user, "task_feedback",
+                    f"task:{int(task_id)}/item:{int(item_id)}", None, {})
+    return {"ok": True, "id": fid}
+
+
+def task_item_delete(item_id: int) -> dict:
+    it = STORE.get_task_item(int(item_id or 0))
+    if not it:
+        return {"error": "子项不存在"}
+    STORE.delete_task_item(int(item_id))
+    return {"ok": True}
+
+
+def ask_escalate(user: str, question: str, note: str = "", ref: str = "") -> dict:
+    """新人在问答页主动联系导师：问题进入导师看板待回复，同时进入沉淀候选池。
+    任务子项的提问也走这里（ref 指回反馈，导师回复直接回到任务卡片）。"""
+    user = (user or "").strip() or "demo"
+    question = (question or "").strip()
+    if not question:
+        return {"error": "问题不能为空"}
+    note = (note or "").strip()[:300]
+    reason = "新人主动求助" + ("：" + note if note else "")
+    STORE.add_escalation(user, question, reason, ref)
+    _record_candidate(question)
+    STORE.add_event(user, "ask", "", None, {"escalated": True, "manual": True})
+    return {"ok": True}
+
+
+def my_escalations(user: str) -> dict:
+    """我的求助记录（含导师回复）。提问不参与能力打分，这里只做状态可见。"""
+    rows = STORE.my_escalations((user or "").strip())
+    return {"items": [{"id": r["id"], "question": r["question"], "reason": r["reason"],
+                       "answer": r.get("answer") or "", "status": r["status"],
+                       "created_at": r["created_at"]} for r in rows]}
+
+
+def escalation_answer(eid: int, answer: str) -> dict:
+    """导师回复求助：答案写回后，新人在问答页「我的求助」里能看到。"""
+    answer = (answer or "").strip()
+    if not answer:
+        return {"error": "回复内容不能为空"}
+    n = STORE.answer_escalation(int(eid or 0), answer[:1000])
+    if not n:
+        return {"error": "求助不存在"}
+    return {"ok": True}
+
+
+ITEM_TYPES = ("question", "requirement", "general")
+
+
+TEXT_EXTS = {".txt", ".md", ".py", ".java", ".js", ".ts", ".json", ".xml", ".yml", ".yaml",
+             ".html", ".css", ".sql", ".gradle", ".cfg", ".ini", ".toml", ".c", ".cpp", ".h",
+             ".go", ".rs", ".sh", ".bat", ".properties"}
+DEP_FILES = {"requirements.txt", "package.json", "pom.xml", "build.gradle", "go.mod",
+             "environment.yml", "setup.py"}
+
+
+def projects_list() -> dict:
+    return {"projects": load_projects()}
+
+
+def project_import(name: str, description: str, files=None) -> dict:
+    """导师导入项目（代码/文档）→ AI 自动生成该项目专属知识库。
+    知识条目带 project 归属，与通用知识库、其他项目知识库互相独立。"""
+    name = (name or "").strip()
+    if not name:
+        return {"error": "项目名称不能为空"}
+    files = [f for f in (files or []) if (f.get("content") or b"")]
+    if not files:
+        return {"error": "请至少上传一个项目文件"}
+    projects = load_projects()
+    pid = "p" + uuid.uuid4().hex[:8]
+    proj = {"id": pid, "name": name[:80], "description": (description or "").strip()[:300],
+            "created_at": today_str()}
+    projects.insert(0, proj)
+    save_projects(projects)
+
+    pdir = FILES_DIR / "projects" / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+    tree, excerpts, dep_texts = [], [], []
+    for f in files:
+        content = f.get("content") or b""
+        filename = (f.get("filename") or "file").strip() or "file"
+        safe = re.sub(r"[^\w.\-]", "_", filename)[:80]
+        stored = uuid.uuid4().hex[:8] + "_" + safe
+        (pdir / stored).write_bytes(content)
+        ext = os.path.splitext(filename)[1].lower()
+        tree.append(f"{filename}（{len(content)} 字节）")
+        if ext in TEXT_EXTS and len(excerpts) < 30:
+            excerpts.append(f"=== {filename} ===\n" + content.decode("utf-8", "replace")[:3000])
+        if os.path.basename(filename).lower() in DEP_FILES:
+            dep_texts.append(f"=== {filename} ===\n" + content.decode("utf-8", "replace")[:2000])
+
+    generated = []
+    if LLM_CLIENT.enabled:
+        context = (f"项目名称：{name}\n项目说明：{description or '（无）'}\n\n文件清单：\n"
+                   + "\n".join(tree[:40]) + "\n\n内容摘录：\n" + "\n\n".join(excerpts[:20])[:9000])
+        out = LLM_CLIENT.chat([
+            {"role": "system", "content":
+                "你是资深工程师兼新人导师。依据提供的项目文件清单与摘录，为加入该项目的新人生成知识库条目。"
+                "只依据资料本身；资料里没有的写『待确认』，绝不编造。\n"
+                '只输出 JSON 数组：[{"title":"条目标题","tags":["标签"],"body":"markdown 正文"}]\n'
+                "生成 4-8 条，覆盖：项目概述、需要的软件环境与依赖（从依赖清单推断，没有就列待确认项）、"
+                "目录/模块结构、关键流程、新人上手注意事项。"},
+            {"role": "user", "content": context[:12000]},
+        ], temperature=0.2, max_tokens=2000)
+        entries = _parse_json_array(out) if out else None
+        if entries:
+            for e in entries:
+                if not isinstance(e, dict) or not str(e.get("title") or "").strip():
+                    continue
+                generated.append({"title": str(e.get("title"))[:100],
+                                  "tags": [str(x) for x in (e.get("tags") or [])][:6],
+                                  "body": str(e.get("body") or "")})
+    if not generated:
+        # 未接模型：基于文件清单与依赖线索的保底生成（可解释、可编辑）
+        body = "## 文件清单\n" + "\n".join("- " + t for t in tree[:40])
+        if dep_texts:
+            body += "\n\n## 依赖与环境线索\n" + "\n\n".join(dep_texts[:3])
+        else:
+            body += "\n\n## 依赖与环境\n未检测到依赖清单文件（requirements.txt / package.json / pom.xml 等），请导师补充。"
+        generated = [
+            {"title": f"{name}：项目资料概览", "tags": [name, "项目"], "body": body},
+            {"title": f"{name}：上手指南（模板）", "tags": [name, "上手"],
+             "body": f"## 项目说明\n{description or '（待导师补充）'}\n\n## 新人第一步\n1. 阅读上方资料清单\n2. 按依赖线索搭环境\n3. 有问题在问答页联系导师"},
+        ]
+    kdir = DATA_DIR / "knowledge"
+    kdir.mkdir(parents=True, exist_ok=True)
+    kb_ids = []
+    for i, e in enumerate(generated, 1):
+        kid = f"{pid}-kb-{i:02d}"
+        fname = re.sub(r"[^\w\-]", "_", f"{kid}-{e['title']}")[:60] + ".md"
+        front = (f"---\nid: {kid}\ntitle: {e['title']}\nproject: {pid}\n"
+                 f"tags: {', '.join(e['tags']) or name}\nowner: 导师\n"
+                 f"review_date: {today_str()}\nsource: 项目导入 AI 生成\n---\n\n")
+        (kdir / fname).write_text(front + e["body"] + "\n", encoding="utf-8")
+        kb_ids.append(kid)
+    KB.load()
+    return {"ok": True, "project": proj, "generated": len(generated),
+            "kb_ids": kb_ids, "mode": "llm" if LLM_CLIENT.enabled else "template"}
+
+
+def project_delete(pid: str) -> dict:
+    """删除项目：连同 AI 生成的该项目知识条目与上传的源文件。"""
+    pid = (pid or "").strip()
+    projects = load_projects()
+    kept = [p for p in projects if p.get("id") != pid]
+    if len(kept) == len(projects):
+        return {"error": "项目不存在"}
+    save_projects(kept)
+    removed = 0
+    kdir = DATA_DIR / "knowledge"
+    if kdir.is_dir():
+        for p in kdir.glob(pid + "-kb-*.md"):
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    pdir = FILES_DIR / "projects" / pid
+    if pdir.is_dir():
+        for p in pdir.iterdir():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        try:
+            pdir.rmdir()
+        except OSError:
+            pass
+    KB.load()
+    return {"ok": True, "removed_kb": removed}
+
+
+def tasks_ai_draft(description: str, project: str = "") -> dict:
+    """AI 起草任务：导师给需求描述，生成标题/说明/子项草稿，导师修改后再发布。"""
+    description = (description or "").strip()
+    if not description:
+        return {"error": "请先描述这个任务的需求"}
+    if LLM_CLIENT.enabled:
+        out = LLM_CLIENT.chat([
+            {"role": "system", "content":
+                "你是新人导师的助手。根据导师写下的需求描述，起草一个发给新人的任务。\n"
+                '只输出 JSON 对象：{"title":"任务标题(20字内)","description":"任务说明(背景/要求/验收，markdown，150字内)",'
+                '"items":[{"itype":"question|requirement|general","title":"子项标题","content":"子项说明"}]}\n'
+                "拆 2-5 个子项：需要新人回答的用 question，需要阅读确认的资料用 requirement，其他用 general。"},
+            {"role": "user", "content": f"需求描述：\n{description[:2000]}"
+             + (f"\n\n关联项目：{project}" if project else "")},
+        ], temperature=0.3, max_tokens=800)
+        parsed = None
+        if out:
+            t = out.strip()
+            if t.startswith("```"):
+                t = re_sub_fence(t)
+            s2, e2 = t.find("{"), t.rfind("}")
+            if s2 != -1 and e2 != -1:
+                try:
+                    parsed = json.loads(t[s2:e2 + 1])
+                except ValueError:
+                    parsed = None
+        if isinstance(parsed, dict) and str(parsed.get("title") or "").strip():
+            items = []
+            for it in parsed.get("items") or []:
+                if not isinstance(it, dict) or not str(it.get("title") or "").strip():
+                    continue
+                itype = str(it.get("itype") or "general")
+                items.append({"itype": itype if itype in ITEM_TYPES else "general",
+                              "title": str(it.get("title"))[:120],
+                              "content": str(it.get("content") or "")[:500]})
+            return {"ok": True, "mode": "llm",
+                    "draft": {"title": str(parsed.get("title"))[:80],
+                              "description": str(parsed.get("description") or ""),
+                              "items": items}}
+    # 未接模型：按行拆分的保底草稿（第一行做标题，其余行做子项）
+    lines = [l.strip("-• ").strip() for l in description.splitlines() if l.strip()]
+    title = lines[0][:60] if lines else "新任务"
+    items = [{"itype": "general", "title": (l[:60] or f"子项 {i}"), "content": l}
+             for i, l in enumerate(lines[1:4], 1)]
+    return {"ok": True, "mode": "template",
+            "draft": {"title": title, "description": description, "items": items}}
+
+
+def weekly_export_md() -> tuple:
+    """把收到的全部周报导出为一个 Markdown 文件（Word/WPS 可直接打开）。"""
+    names = {u["id"]: u["name"] for u in STORE.users()}
+    rows = STORE.weeklies(None, 500)
+    by_user = {}
+    for r in rows:
+        by_user.setdefault(r["user"], []).append(r)
+    out = ["# 新人周报导出", "", f"- 导出时间：{today_str()}", f"- 周报总数：{len(rows)}", ""]
+    for uid, rs in by_user.items():
+        out.append(f"## {names.get(uid, uid)}（{uid}）")
+        out.append("")
+        for r in rs:
+            score = f"{r['score']} 分" if r.get("score") is not None else "未评分"
+            out.append(f"### {r['week_label']}（{r['created_at'][:10]} · {score}）")
+            out.append("")
+            out.append(r["content"].strip())
+            out.append("")
+    fname = "周报导出_" + today_str() + ".md"
+    return (fname, "\n".join(out))
+
+
+def feedback_confirm(feedback_id: int, note: str = "") -> dict:
+    """导师确认反馈：submitted → confirmed，可附一句点评。"""
+    n = STORE.confirm_feedback(int(feedback_id or 0), (note or "").strip()[:500])
+    if not n:
+        return {"error": "反馈不存在"}
+    return {"ok": True}
+
+
+def task_delete(task_id: int) -> dict:
+    t = STORE.get_task(int(task_id or 0))
+    if not t:
+        return {"error": "任务不存在"}
+    STORE.delete_task(int(task_id))
+    return {"ok": True}
 
 
 # ================================================================ ① 环境自检
@@ -809,68 +1270,38 @@ STUCK_DAYS = 5
 
 
 def dashboard() -> dict:
-    users = STORE.users()
-    all_prog = STORE.all_progress()
-    now = datetime.now()
-
-    rows = []
-    for u in users:
-        mine = [p for p in all_prog if p["user"] == u["id"]]
-        done = len([p for p in mine if p["status"] == "passed"])
-        path = path_with_progress(track=u.get("track") or "general", user=u["id"])
-        total = path.get("summary", {}).get("total") or 0
-        last = max([p["updated_at"] for p in mine], default="")
-        idle_days = None
-        if last:
-            try:
-                idle_days = (now - datetime.fromisoformat(last)).days
-            except ValueError:
-                idle_days = None
-        stuck = bool(idle_days is not None and idle_days >= STUCK_DAYS and done < total)
-        escal = [e for e in STORE.escalations() if e["user"] == u["id"]]
-        rows.append({
-            "id": u["id"], "name": u["name"], "track": u.get("track"),
-            "passed": done, "total": total,
-            "percent": round(done / total * 100) if total else 0,
-            "idle_days": idle_days, "stuck": stuck,
-            "open_escalations": len(escal),
-            "dimensions": STORE.dimension_scores(u["id"]),
-        })
-
-    cands = STORE.candidates("open")
-    trigger = int(SETTINGS["retrieval"].get("draft_trigger_count", 2))
-    drafts = [i for i in KB.faq["items"] if i.get("status") == "draft"]
-    unanswerable = [q for q in STORE.questions(200) if q["escalated"]]
-
+    """导师看板（精简版）：只关注三件事——回复新人问题、收新人消息、收周报。
+    进度表/沉淀池/FAQ 草稿分别在新人档案、知识库页查看，看板不再堆砌。"""
+    names = {u["id"]: u["name"] for u in STORE.users()}
+    escalations = [{"id": e["id"], "user": e["user"],
+                    "user_name": names.get(e["user"], e["user"]),
+                    "question": e["question"], "reason": e["reason"],
+                    "created_at": e["created_at"]}
+                   for e in STORE.escalations("open")]
+    messages = []
+    for t in STORE.tasks_all():
+        for it in STORE.task_items(t["id"]):
+            for f in STORE.feedbacks_for_item(it["id"]):
+                messages.append({
+                    "id": f["id"], "task_id": t["id"], "task_title": t["title"],
+                    "item_title": it["title"], "user": f["user"],
+                    "user_name": names.get(f["user"], f["user"]),
+                    "content": f["content"], "status": f["status"],
+                    "note": f["note"], "created_at": f["created_at"]})
+    messages.sort(key=lambda x: x["created_at"], reverse=True)
+    messages = messages[:20]
+    weeklies = [{"user": r["user"], "user_name": names.get(r["user"], r["user"]),
+                 "week_label": r["week_label"], "score": r.get("score"),
+                 "created_at": r["created_at"], "content": r["content"]}
+                for r in STORE.weeklies(None, 50)]
     return {
-        "users": rows,
-        "alerts": {
-            "stuck": [r["name"] for r in rows if r["stuck"]],
-            "escalations": STORE.escalations()[:12],
-            "ready_to_draft": [c for c in cands if c["count"] >= trigger],
-            "candidates": cands[:15],
-            "overdue_knowledge": KB.overdue()[:15],
-            "pending_drafts": drafts,
-            "sessions_need_review": [
-                s for s in STORE.sessions(limit=15) if s["status"] == "finished"][:8],
-        },
-        "counters": {
-            "newcomers": len(users),
-            "open_escalations": len(STORE.escalations()),
-            "drafts": len(drafts),
-            "candidates": len(cands),
-            "overdue": len(KB.overdue()),
-            "questions_total": len(STORE.questions(1000)),
-        },
-        "recent_questions": [
-            {"user": ("匿名" if q["anonymous"] else q["user"]), "question": q["question"],
-             "escalated": bool(q["escalated"]), "score": q["top_score"],
-             "created_at": q["created_at"]}
-            for q in STORE.questions(25)],
+        "escalations": escalations,
+        "messages": messages,
+        "weeklies": weeklies,
+        "counters": {"pending_questions": len(escalations),
+                     "messages": len(messages), "weeklies": len(weeklies)},
     }
 
-
-# ================================================================ ⑧ FAQ 沉淀
 
 def faq_drafts() -> dict:
     trigger = int(SETTINGS["retrieval"].get("draft_trigger_count", 2))
@@ -916,7 +1347,6 @@ def faq_make_draft(candidate_id: int) -> dict:
         "review_date": today_str(),
         "source": "新人提问自动沉淀",
         "status": "draft",
-        "hits": 0,
         "created_by": "auto-sediment",
         "from_candidate": candidate_id,
         "asked_count": cand["count"],
@@ -932,6 +1362,12 @@ def faq_publish(payload: dict) -> dict:
     fid = payload.get("id")
     for it in KB.faq["items"]:
         if it.get("id") == fid:
+            # 守卫：占位答案一旦发布会进入检索池，同类问题会被自动回复这条
+            # 「待补充」占位文案——零误答承诺就是这么被悄悄破坏的。
+            new_a = str(payload.get("a") or it.get("a") or "").strip()
+            if new_a.startswith("待补充"):
+                return {"error": "答案还是『待补充』占位内容，发布后会被自动回复给新人。"
+                                 "请先补上真实答案再发布。"}
             for k in ("q", "a", "owner", "source", "review_date"):
                 if payload.get(k):
                     it[k] = payload[k]

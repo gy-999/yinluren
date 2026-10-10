@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>引路人 · 导师端</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">引</div>
+      <div>
+        <div class="brand-name">引路人</div>
+        <div class="brand-sub">导师端 · 看板与把关</div>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <div class="nav-group">导师</div>
+      <button class="nav-item" data-view="dashboard"><span>🎯</span>导师看板</button>
+      <button class="nav-item" data-view="tasks"><span>📋</span>任务中心</button>
+      <button class="nav-item" data-view="kb"><span>📚</span>知识库</button>
+      <button class="nav-item" data-view="settings"><span>⚙️</span>设置</button>
+      <div class="nav-group">入口</div>
+      <a class="nav-link" href="/"><span>💬</span>新人入口</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="mode-badge" class="mode-badge">…</div>
+      <div class="muted small" id="kb-stat"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="view-title">导师看板</h1>
+      <div class="topbar-right">
+        <span id="whoami" class="small hidden"></span>
+        <button id="logout-btn" class="btn small hidden">退出登录</button>
+        <div id="identity-open" style="display:flex;align-items:center;gap:8px">
+          <label class="muted small">当前身份</label>
+          <select id="user-select"></select>
+        </div>
+      </div>
+    </header>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+<div id="login-mask" class="login-mask hidden">
+  <div class="login-card">
+    <div class="brand-mark">引</div>
+    <h2>引路人 · 导师登录</h2>
+    <p id="login-msg" class="muted small">请选择导师账号并输入 PIN</p>
+    <select id="login-user"></select>
+    <input id="login-pin" type="password" inputmode="numeric" maxlength="4"
+           placeholder="4 位 PIN" autocomplete="off">
+    <button id="login-btn" class="btn primary">进入导师端</button>
+    <a class="muted small" href="/">我是新人，去新人端登录</a>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script>window.APP_ROLE = 'mentor';</script>
+<script src="/app.js"></script>
+</body>
+</html>

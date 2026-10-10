@@ -8,13 +8,39 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+# 管道 / CI 场景下强制 UTF-8，避免中文乱码
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (ValueError, OSError):
+        pass
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8848"
 PASS, FAIL = [], []
+
+# 双端分角色登录：从 users.json 读账号与 PIN，按需登录并缓存 token
+USERS = {u["id"]: u for u in json.loads(
+    (Path(__file__).resolve().parent / "data" / "users.json").read_text(encoding="utf-8-sig")
+)["users"]}
+TOKENS = {}
+
+
+def tok(user: str) -> str:
+    if user not in TOKENS:
+        u = USERS.get(user) or {}
+        req = urllib.request.Request(BASE + "/api/login",
+            data=json.dumps({"user": user, "pin": str(u.get("pin") or "")}).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        TOKENS[user] = resp.get("token") or ""
+    return TOKENS[user]
 
 
 def _answers(path_id: str, stage_id: str) -> dict:
@@ -27,13 +53,38 @@ def _answers(path_id: str, stage_id: str) -> dict:
     return {}
 
 
-def call(method: str, path: str, body=None):
+def call(method: str, path: str, body=None, user=None):
+    # 身份自动推导：body.user -> 查询串 user -> 默认导师（导师可访问全部接口）
+    if user is None:
+        if isinstance(body, dict) and body.get("user"):
+            user = str(body["user"])
+        else:
+            m = re.search(r"[?&]user=([^&]*)", path)
+            user = m.group(1) if m else "mentor"
     url = BASE + path
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "X-Token": tok(user)})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def raw(method: str, path: str, body=None, token: str = ""):
+    """与 call 相同，但 HTTP 4xx 不抛异常，返回 (status, payload)——供身份保护测试用。"""
+    url = BASE + path
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json", "X-Token": token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read().decode("utf-8"))
+        except ValueError:
+            payload = {}
+        return e.code, payload
 
 
 def check(name, fn, cond=None):
@@ -87,6 +138,13 @@ check("SOFT 敏感话题但知识库没有（应转人工）",
 check("匿名提问",
       lambda: call("POST", "/api/ask", {"user": "chen_sy", "question": "试用期怎么转正", "anonymous": True}),
       lambda o: "escalated" in o)
+check("POST /api/ask/escalate（没答好主动联系导师）",
+      lambda: call("POST", "/api/ask/escalate",
+                   {"user": "chen_sy", "question": "想请导师帮我看一下我写的第一份技术方案", "note": "方便的话今天下午"}),
+      lambda o: o.get("ok"))
+check("GET /api/escalations/mine（我的求助可查）",
+      lambda: call("GET", "/api/escalations/mine?user=chen_sy"),
+      lambda o: any("技术方案" in (e.get("question") or "") for e in (o.get("items") or [])))
 
 print("\n[检索标定回归]  —— 这些用例锁定了阈值标定结果，改检索参数后必须仍然成立")
 SHOULD_HIT = {
@@ -130,9 +188,10 @@ print("\n[成长地图]")
 path = check("GET /api/path",
              lambda: call("GET", "/api/path?user=chen_sy&track=engineering"),
              lambda o: o.get("stages") and o["stages"][0]["status"] != "locked")
-check("GET /api/exam（不下发答案）",
+check("GET /api/exam（不下发答案与解析）",
       lambda: call("GET", "/api/exam?path=engineering&stage=e1"),
-      lambda o: o.get("questions") and all("answer" not in q for q in o["questions"]))
+      lambda o: o.get("questions") and all("answer" not in q and "explain" not in q
+                                           for q in o["questions"]))
 
 qs = call("GET", "/api/exam?path=engineering&stage=e1")["questions"]
 check("POST /api/exam 全对 → 通关",
@@ -154,9 +213,22 @@ print("\n[档案与看板]")
 check("GET /api/profile",
       lambda: call("GET", "/api/profile?user=chen_sy"),
       lambda o: o.get("radar") and o.get("stats"))
-check("GET /api/dashboard",
+check("GET /api/dashboard（精简版：问题/消息/周报）",
       lambda: call("GET", "/api/dashboard"),
-      lambda o: o.get("users") and o.get("alerts") and o.get("counters"))
+      lambda o: o.get("escalations") is not None and o.get("messages") is not None
+      and o.get("weeklies") is not None and o.get("counters"))
+dash = call("GET", "/api/dashboard")
+escs = (dash.get("escalations") or [])
+if escs:
+    eid, euser = escs[0]["id"], escs[0]["user"]
+    check("POST /api/escalation/answer（导师回复求助）",
+          lambda: call("POST", "/api/escalation/answer",
+                       {"id": eid, "answer": "收到，这个问题我上午当面跟你讲"}),
+          lambda o: o.get("ok"))
+    mine = call("GET", "/api/escalations/mine?user=" + euser)
+    check("回复后新人「我的求助」能看到答案",
+          lambda: mine,
+          lambda o: any(e.get("id") == eid and e.get("answer") for e in (o.get("items") or [])))
 
 print("\n[陪练室]")
 check("GET /api/scenarios", lambda: call("GET", "/api/scenarios"),
@@ -171,17 +243,6 @@ if sess.get("session"):
     check("POST /api/coach/finish（应给出评分）",
           lambda: call("POST", "/api/coach/finish", {"session": sid}),
           lambda o: o.get("result", {}).get("items") and o["result"].get("total") is not None)
-
-print("\n[作业批改]")
-check("GET /api/rubrics", lambda: call("GET", "/api/rubrics"),
-      lambda o: len(o.get("rubrics") or []) >= 4)
-check("POST /api/review（本地启发式可解释）",
-      lambda: call("POST", "/api/review", {
-          "rubric": "requirement-analysis", "user": "chen_sy", "title": "第一次需求分析",
-          "text": "本次需求的目标用户是中小商家，要解决对账耗时的问题，目标是每周节省 3 小时。"
-                  "本期只做自动对账，不做自动开票，边界明确。异常情况包括账单为空、重复导入、"
-                  "权限不足，都给了错误提示。验收标准：对账耗时从 15 分钟降到 5 分钟以内，准确率 100%。"}),
-      lambda o: o.get("items") and o.get("total") is not None)
 
 print("\n[环境自检]")
 check("GET /api/envcheck（列出检查集）", lambda: call("GET", "/api/envcheck"),
@@ -246,6 +307,183 @@ if cand:
 print("\n[设置]")
 check("GET /api/settings", lambda: call("GET", "/api/settings"),
       lambda o: o.get("settings") and o.get("llm_status"))
+
+print("\n[周报]")
+WEEKLY_GOOD = ("本周完成登录模块联调，交付 3 个功能点，登录成功率提升到 99.8%。"
+               "遇到验证码服务超时问题，增加重试与降级策略后解决，结果可复现。"
+               "下周计划：完成权限模块开发并提测，产出接口文档。")
+check("POST /api/weekly（提交并自动批改）",
+      lambda: call("POST", "/api/weekly", {"user": "chen_sy", "content": WEEKLY_GOOD}),
+      lambda o: o.get("ok") and o.get("score") is not None)
+check("周报空白内容应被拒绝",
+      lambda: call("POST", "/api/weekly", {"user": "chen_sy", "content": "   "}),
+      lambda o: o.get("error"))
+check("GET /api/weekly 我的历史",
+      lambda: call("GET", "/api/weekly?user=chen_sy"),
+      lambda o: len(o.get("mine") or []) >= 1)
+check("GET /api/weekly/all 全员列表",
+      lambda: call("GET", "/api/weekly/all"),
+      lambda o: any(r.get("user") == "chen_sy" for r in (o.get("all") or [])))
+
+print("\n[任务中心]")
+TASK_TITLE = "冒烟测试任务 " + str(random.randint(10000, 99999))
+CRLF = chr(13) + chr(10)
+
+
+def multipart_body(fields: dict, files: list) -> tuple:
+    """手工拼 multipart/form-data（与 server 端解析器配套）。files: [(字段名, 文件名, 字节)]"""
+    b = "----smoke" + str(random.randint(100000, 999999))
+    out = []
+    for k, v in fields.items():
+        out.append(("--" + b + CRLF + "Content-Disposition: form-data; "
+                    + "name=" + chr(34) + k + chr(34) + CRLF + CRLF + v + CRLF).encode("utf-8"))
+    for name, filename, content in files:
+        out.append(("--" + b + CRLF + "Content-Disposition: form-data; name=" + chr(34)
+                    + name + chr(34) + "; filename=" + chr(34) + filename + chr(34)
+                    + CRLF + "Content-Type: application/octet-stream" + CRLF + CRLF).encode("utf-8"))
+        out.append(content)
+        out.append(CRLF.encode("ascii"))
+    out.append(("--" + b + "--" + CRLF).encode("ascii"))
+    return b"".join(out), "multipart/form-data; boundary=" + b
+
+
+def call_multipart(path: str, fields: dict, files: list, user=None):
+    if user is None:
+        user = str(fields.get("user") or "mentor")
+    body, ctype = multipart_body(fields, files)
+    req = urllib.request.Request(BASE + path, data=body, method="POST",
+                                 headers={"Content-Type": ctype, "X-Token": tok(user)})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+mt = call_multipart("/api/tasks",
+                    {"user": "mentor", "title": TASK_TITLE,
+                     "description": "端到端测试任务，可删除", "assignee": "",
+                     "item_title_0": "回答：这个功能的边界是什么",
+                     "item_itype_0": "question",
+                     "item_content_0": "阅读附件后回答：这个功能明确不做什么？",
+                     "item_title_1": "确认需求文档",
+                     "item_itype_1": "requirement",
+                     "item_content_1": "阅读附件需求，回帖确认理解一致"},
+                    [("files", "附件说明.txt", "附件内容 ABC123".encode("utf-8"))])
+check("POST /api/tasks（发布任务 + 两个子项 + 附件）", lambda: mt, lambda o: o.get("ok") and o.get("id"))
+
+tl = call("GET", "/api/tasks?user=chen_sy")
+task = next((t for t in (tl.get("tasks") or []) if t.get("title") == TASK_TITLE), None)
+check("GET /api/tasks（任务、两个子项与附件都在）", lambda: task,
+      lambda o: o and len(o.get("items") or []) == 2 and len(o.get("files") or []) == 1)
+
+if task:
+    furl = BASE + "/api/files/" + str(task["files"][0]["id"])
+    with urllib.request.urlopen(urllib.request.Request(furl, headers={"X-Token": tok("mentor")}), timeout=10) as fr:
+        fbody = fr.read().decode("utf-8")
+    check("GET /api/files（附件字节级还原）", lambda: fbody,
+          lambda s: s == "附件内容 ABC123")
+
+    it0 = task["items"][0]
+    fbr = call_multipart("/api/tasks/feedback",
+                         {"user": "chen_sy", "task_id": str(task["id"]),
+                          "item_id": str(it0["id"]),
+                          "content": "边界是明确不做自动对账，其余见附件。"},
+                         [("files", "截图.png", bytes([137]) + b"PNG-mock")])
+    check("POST /api/tasks/feedback（按子项反馈 + 附件）", lambda: fbr, lambda o: o.get("ok"))
+
+    t2 = next((t for t in (call("GET", "/api/tasks?user=chen_sy").get("tasks") or [])
+               if t["id"] == task["id"]), None)
+    check("子项进度与完成状态正确", lambda: t2,
+          lambda o: o and o["items"][0]["my_done"] and not o["items"][1]["my_done"]
+          and o["items_my_done"] == 1 and o["items_total"] == 2)
+    fb_id = (t2["items"][0]["feedbacks"] or [{}])[0].get("id")
+    check("POST /api/feedback/confirm（导师逐项确认）",
+          lambda: call("POST", "/api/feedback/confirm", {"id": fb_id, "note": "回答到位"}),
+          lambda o: o.get("ok"))
+    t3 = next((t for t in (call("GET", "/api/tasks?user=chen_sy").get("tasks") or [])
+               if t["id"] == task["id"]), None)
+    check("确认后子项反馈状态变为 confirmed",
+          lambda: t3, lambda o: o and (o["items"][0]["feedbacks"] or [{}])[0].get("status") == "confirmed")
+    dash2 = call("GET", "/api/dashboard")
+    qesc = next((e for e in (dash2.get("escalations") or [])
+                 if "任务提问" in (e.get("reason") or "") and TASK_TITLE[:10] in (e.get("question") or "")), None)
+    if qesc:
+        check("「问题」子项反馈自动进入导师待回复队列", lambda: qesc, lambda o: o.get("id"))
+        check("导师回复后答案回流到子项点评",
+              lambda: call("POST", "/api/escalation/answer",
+                           {"id": qesc["id"], "answer": "边界确认无误，下一步看接口文档"}),
+              lambda o: o.get("ok"))
+        t4 = next((t for t in (call("GET", "/api/tasks?user=chen_sy").get("tasks") or [])
+                   if t["id"] == task["id"]), None)
+        check("回流验证：子项反馈可见导师回复",
+              lambda: t4,
+              lambda o: o and "边界确认无误" in ((o["items"][0]["feedbacks"] or [{}])[0].get("note") or ""))
+    check("POST /api/tasks/delete（清理测试任务与附件）",
+          lambda: call("POST", "/api/tasks/delete", {"id": task["id"]}),
+          lambda o: o.get("ok"))
+    gone = raw("GET", "/api/files/" + str(task["files"][0]["id"]), token=tok("mentor"))
+    check("删除任务后附件随之失效（404）", lambda: gone, lambda o: o[0] == 404)
+
+print("\n[项目知识库 · AI 生成]")
+PNAME = "冒烟卫星项目 " + str(random.randint(10000, 99999))
+imp = call_multipart("/api/projects/import",
+                     {"user": "mentor", "name": PNAME, "description": "端到端测试项目"},
+                     [("files", "README.md", "卫星遥测数据解析工具，用于处理下传数据。".encode("utf-8")),
+                      ("files", "requirements.txt", b"numpy==1.26" + bytes([10]) + b"pandas==2.1")],
+                     user="mentor")
+check("POST /api/projects/import（导入项目并生成知识库）", lambda: imp,
+      lambda o: o.get("ok") and o.get("generated", 0) >= 2)
+pid = (imp or {}).get("project", {}).get("id", "")
+meta2 = call("GET", "/api/meta")
+check("项目进入 meta 列表（与通用知识库分开管理）", lambda: meta2,
+      lambda o: any(p.get("id") == pid for p in (o.get("projects") or [])))
+askp = call("POST", "/api/ask", {"user": "demo", "question": PNAME + " 需要装什么环境", "project": pid})
+check("项目内提问命中该项目知识库（隔离生效）", lambda: askp,
+      lambda o: (not o.get("escalated")) and any("项目资料概览" in (s.get("title") or "") for s in (o.get("sources") or [])))
+
+with urllib.request.urlopen(urllib.request.Request(BASE + "/api/weekly/export",
+        headers={"X-Token": tok("mentor")}), timeout=15) as fr:
+    exp = fr.read().decode("utf-8")
+check("GET /api/weekly/export（周报导出为 Markdown 文件）", lambda: exp,
+      lambda s: "新人周报导出" in s and "周" in s)
+
+check("POST /api/tasks/ai-draft（AI 起草任务，未接模型走保底拆分）",
+      lambda: call("POST", "/api/tasks/ai-draft",
+                   {"description": "完成登录模块开发" + chr(10) + "阅读接口文档" + chr(10) + "联调测试"},
+                   user="mentor"),
+      lambda o: o.get("ok") and o.get("draft", {}).get("title") and len(o["draft"].get("items") or []) >= 1)
+
+check("POST /api/projects/delete（清理测试项目与其知识）",
+      lambda: call("POST", "/api/projects/delete", {"id": pid}, user="mentor"),
+      lambda o: o.get("ok"))
+meta3 = call("GET", "/api/meta")
+check("清理后项目不再出现", lambda: meta3,
+      lambda o: not any(p.get("id") == pid for p in (o.get("projects") or [])))
+
+print("\n[身份保护 · 角色与绑定]  —— 双端登录的权限边界")
+check("无 token 访问导师看板应 401",
+      lambda: raw("GET", "/api/dashboard"), lambda o: o[0] == 401)
+check("错误 PIN 登录被拒绝",
+      lambda: raw("POST", "/api/login", {"user": "demo", "pin": "9999"}),
+      lambda o: o[1].get("error"))
+login = check("正确 PIN 登录发放 token 并带角色",
+              lambda: raw("POST", "/api/login", {"user": "demo", "pin": USERS["demo"]["pin"]}),
+              lambda o: o[0] == 200 and o[1].get("token") and o[1].get("user", {}).get("role") == "newcomer")
+dtok = (login or (0, {}))[1].get("token") or ""
+check("新人账号访问导师看板应 403（角色门禁）",
+      lambda: raw("GET", "/api/dashboard", token=dtok), lambda o: o[0] == 403)
+check("新人发布任务应 403（角色门禁）",
+      lambda: raw("POST", "/api/tasks", {"user": "demo", "title": "越权测试"}, token=dtok),
+      lambda o: o[0] == 403)
+check("登录身份与请求用户不一致应 403（身份绑定）",
+      lambda: raw("POST", "/api/ask", {"user": "chen_sy", "question": "开发环境怎么搭建？"}, token=dtok),
+      lambda o: o[0] == 403)
+check("新人以本人身份提问正常",
+      lambda: raw("POST", "/api/ask", {"user": "demo", "question": "开发环境怎么搭建？"}, token=dtok),
+      lambda o: o[0] == 200 and not o[1].get("error"))
+check("导师账号可访问导师看板",
+      lambda: raw("GET", "/api/dashboard", token=tok("mentor")), lambda o: o[0] == 200)
+check("GET /api/meta 报告 auth_required",
+      lambda: raw("GET", "/api/meta"),
+      lambda o: o[0] == 200 and o[1].get("auth_required") is True)
 
 print("\n" + "=" * 62)
 print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

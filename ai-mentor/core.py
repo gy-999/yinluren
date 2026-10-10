@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -28,7 +29,9 @@ RUNTIME_DIR = DATA_DIR / "runtime"
 WEB_DIR = BASE_DIR / "web"
 DB_PATH = RUNTIME_DIR / "mentor.db"
 SETTINGS_PATH = RUNTIME_DIR / "settings.json"
+FILES_DIR = RUNTIME_DIR / "files"     # 任务/反馈的附件（运行数据，不入版本库）
 FAQ_PATH = DATA_DIR / "faq.json"
+PROJECTS_PATH = DATA_DIR / "projects.json"
 
 DEFAULT_SETTINGS = {
     "llm": {
@@ -92,7 +95,7 @@ def sensitive_hit(text: str):
 # ---------------------------------------------------------------- 基础工具
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, RUNTIME_DIR, WEB_DIR):
+    for d in (DATA_DIR, RUNTIME_DIR, WEB_DIR, FILES_DIR):
         d.mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "knowledge").mkdir(parents=True, exist_ok=True)
     for sub in ("paths", "scenarios", "rubrics", "env_checks"):
@@ -134,7 +137,9 @@ def load_json(path: Path, default):
 def save_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
+    # newline="\n"：Windows 文本模式默认会把 \n 翻译成 CRLF，而仓库 .gitattributes
+    # 规定 LF。不固定行尾的话，程序回写一次内容文件，git status 就会显示整个文件被改了。
+    with tmp.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(value, f, ensure_ascii=False, indent=2)
     tmp.replace(path)
 
@@ -150,6 +155,31 @@ def load_dir_json(subdir: str) -> list:
             item.setdefault("_file", p.name)
             out.append(item)
     return out
+
+
+def load_projects() -> list:
+    """项目列表（data/projects.json）：每个项目是独立的知识空间。"""
+    data = load_json(PROJECTS_PATH, {"projects": []})
+    if not isinstance(data, dict) or "projects" not in data:
+        return []
+    return [p for p in data["projects"] if isinstance(p, dict)]
+
+
+def save_projects(projects: list) -> None:
+    save_json(PROJECTS_PATH, {"projects": projects})
+
+
+def load_users_file() -> list:
+    """users.json 是身份与 PIN 的唯一来源（pin 可选）。每次现读，改完即生效。"""
+    cfg = load_json(DATA_DIR / "users.json", {})
+    users = cfg.get("users") if isinstance(cfg, dict) else None
+    return [u for u in (users or []) if isinstance(u, dict) and u.get("id")]
+
+
+def auth_enabled() -> bool:
+    """只要有一个用户配置了 4 位 pin，全站就进入「选人 + PIN」身份保护模式；
+    一个都没配则完全开放（保持小工具零配置即用的特点）。"""
+    return any(str(u.get("pin") or "").strip() for u in load_users_file())
 
 
 def strip_frontmatter(text: str):
@@ -302,7 +332,9 @@ class SearchIndex:
                 vec[k] /= norm
         return vec
 
-    def search(self, query: str, top_k: int = 4, kind: str | None = None) -> list:
+    def search(self, query: str, top_k: int = 4, kind: str | None = None,
+               project: str | None = None) -> list:
+        """project=None 检索全部；指定项目时只命中该项目知识 + 无归属的通用知识。"""
         qtokens = tokenize(query)
         qv = self._vector(qtokens)
         if not qv:
@@ -316,6 +348,8 @@ class SearchIndex:
             di, weight = self.meta[i]
             d = self.docs[di]
             if kind and d.get("kind") != kind:
+                continue
+            if project is not None and str(d.get("project") or "") not in ("", project):
                 continue
             small, big = (qv, dv) if len(qv) <= len(dv) else (dv, qv)
             s = sum(w * big.get(t, 0.0) for t, w in small.items())
@@ -364,6 +398,7 @@ class KnowledgeBase:
                     "title": meta.get("title") or p.stem,
                     "track": _as_list(meta.get("track")),
                     "tags": _as_list(meta.get("tags")),
+                    "project": str(meta.get("project") or ""),
                     "owner": meta.get("owner", "未指定"),
                     "review_date": meta.get("review_date", ""),
                     "source": meta.get("source", f"知识库 / {p.name}"),
@@ -379,6 +414,7 @@ class KnowledgeBase:
             docs.append({
                 "id": e["id"], "kind": "kb", "title": e["title"],
                 "text": e["body"], "tags": e["tags"] + e["track"],
+                "project": e.get("project", ""),
                 "payload": e,
             })
         for it in self.faq["items"]:
@@ -391,10 +427,10 @@ class KnowledgeBase:
             })
         self.index = SearchIndex(docs)
 
-    def search(self, query: str, top_k: int = 4) -> list:
+    def search(self, query: str, top_k: int = 4, project: str | None = None) -> list:
         if self.index is None:
             self.load()
-        return self.index.search(query, top_k=top_k)
+        return self.index.search(query, top_k=top_k, project=project)
 
     def get_entry(self, entry_id: str):
         for e in self.entries:
@@ -418,13 +454,6 @@ class KnowledgeBase:
         return out
 
     # ---- FAQ 写入 ----
-    def bump_faq_hit(self, faq_id: str) -> None:
-        for it in self.faq["items"]:
-            if it.get("id") == faq_id:
-                it["hits"] = int(it.get("hits", 0)) + 1
-                save_json(FAQ_PATH, self.faq)
-                return
-
     def next_faq_id(self) -> str:
         mx = 0
         for it in self.faq["items"]:
@@ -436,7 +465,6 @@ class KnowledgeBase:
     def add_faq(self, item: dict) -> dict:
         item.setdefault("id", self.next_faq_id())
         item.setdefault("status", "published")
-        item.setdefault("hits", 0)
         item.setdefault("created_by", "mentor")
         self.faq["items"].append(item)
         save_json(FAQ_PATH, self.faq)
@@ -448,7 +476,7 @@ class KnowledgeBase:
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY, name TEXT, track TEXT, cohort TEXT, joined_at TEXT
+  id TEXT PRIMARY KEY, name TEXT, track TEXT, cohort TEXT, joined_at TEXT, role TEXT DEFAULT 'newcomer'
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -476,7 +504,40 @@ CREATE TABLE IF NOT EXISTS coach_sessions (
 );
 CREATE TABLE IF NOT EXISTS escalations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user TEXT, question TEXT, reason TEXT, status TEXT DEFAULT 'open', created_at TEXT
+  user TEXT, question TEXT, reason TEXT, status TEXT DEFAULT 'open',
+  answer TEXT DEFAULT '', answered_at TEXT, ref TEXT DEFAULT '', created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER, title TEXT, itype TEXT DEFAULT 'general',
+  content TEXT DEFAULT '', created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS faq_hits (
+  faq_id TEXT PRIMARY KEY, hits INTEGER DEFAULT 0, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY, user TEXT, role TEXT DEFAULT 'newcomer', created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS weeklies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user TEXT, week_label TEXT, content TEXT,
+  score REAL, mode TEXT, review TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT, description TEXT, creator TEXT,
+  assignee TEXT DEFAULT '', created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS uploads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT,                          -- 'task' | 'feedback'
+  owner_id INTEGER,                   -- 任务 id / 反馈 id
+  filename TEXT, stored_name TEXT, size INTEGER, mime TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_feedbacks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER, item_id INTEGER DEFAULT 0, user TEXT, content TEXT,
+  status TEXT DEFAULT 'submitted', note TEXT DEFAULT '', created_at TEXT
 );
 """
 
@@ -490,6 +551,20 @@ class Store:
         with self._lock:
             self._conn.executescript(SCHEMA)
             self._conn.commit()
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """旧库补列：role 分角色登录、escalations 导师回复、feedback 子项归属。幂等。"""
+        for table, col, dft in (("users", "role", "'newcomer'"),
+                                ("sessions", "role", "'newcomer'"),
+                                ("escalations", "answer", "''"),
+                                ("escalations", "answered_at", "''"),
+                                ("escalations", "ref", "''"),
+                                ("task_feedbacks", "item_id", "0")):
+            cols = [r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT {dft}")
+        self._conn.commit()
 
     def _exec(self, sql: str, args: tuple = ()):
         with self._lock:
@@ -503,11 +578,12 @@ class Store:
             return [dict(r) for r in cur.fetchall()]
 
     # ---- users ----
-    def upsert_user(self, uid: str, name: str, track: str, cohort: str = "", joined_at: str = "") -> None:
+    def upsert_user(self, uid: str, name: str, track: str, cohort: str = "",
+                    joined_at: str = "", role: str = "newcomer") -> None:
         self._exec(
-            "INSERT INTO users(id,name,track,cohort,joined_at) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, track=excluded.track",
-            (uid, name, track, cohort, joined_at or today_str()),
+            "INSERT INTO users(id,name,track,cohort,joined_at,role) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, track=excluded.track, role=excluded.role",
+            (uid, name, track, cohort, joined_at or today_str(), role),
         )
 
     def users(self) -> list:
@@ -613,13 +689,222 @@ class Store:
         return self._query(
             "SELECT * FROM escalations WHERE status=? ORDER BY id DESC", (status,))
 
-    def add_escalation(self, user: str, question: str, reason: str) -> None:
+    def add_escalation(self, user: str, question: str, reason: str, ref: str = "") -> None:
         self._exec(
-            "INSERT INTO escalations(user,question,reason,status,created_at) VALUES(?,?,?,?,?)",
-            (user, question, reason, "open", datetime.now().isoformat(timespec="seconds")))
+            "INSERT INTO escalations(user,question,reason,status,ref,created_at) VALUES(?,?,?,?,?,?)",
+            (user, question, reason, "open", ref,
+             datetime.now().isoformat(timespec="seconds")))
 
     def resolve_escalation(self, eid: int) -> None:
         self._exec("UPDATE escalations SET status='done' WHERE id=?", (eid,))
+
+    def answer_escalation(self, eid: int, answer: str) -> int:
+        cur = self._exec(
+            "UPDATE escalations SET status='done', answer=?, answered_at=? WHERE id=?",
+            (answer, datetime.now().isoformat(timespec="seconds"), eid))
+        # 任务提问回流：ref 形如 feedback:12 时，答案同步写回子项反馈的导师点评，
+        # 新人在任务卡片上直接看到答案，不用跳去问答页。
+        if cur.rowcount:
+            row = self._query("SELECT ref FROM escalations WHERE id=?", (eid,))
+            ref = (row[0]["ref"] if row and row[0]["ref"] else "")
+            if ref.startswith("feedback:"):
+                try:
+                    fid = int(ref.split(":", 1)[1])
+                    self._exec("UPDATE task_feedbacks SET note=? WHERE id=?", (answer, fid))
+                except (ValueError, IndexError):
+                    pass
+        return cur.rowcount
+
+    def my_escalations(self, user: str) -> list:
+        return self._query(
+            "SELECT * FROM escalations WHERE user=? ORDER BY id DESC", (user,))
+
+    # ---- FAQ 命中计数（存 SQLite，不写回 faq.json，保持内容文件纯净可 review）----
+    def bump_faq_hit(self, faq_id: str) -> None:
+        self._exec(
+            "INSERT INTO faq_hits(faq_id,hits,updated_at) VALUES(?,1,?) "
+            "ON CONFLICT(faq_id) DO UPDATE SET hits=hits+1, updated_at=excluded.updated_at",
+            (faq_id, datetime.now().isoformat(timespec="seconds")))
+
+    def faq_hit(self, faq_id: str) -> int:
+        rows = self._query("SELECT hits FROM faq_hits WHERE faq_id=?", (faq_id,))
+        return int(rows[0]["hits"]) if rows else 0
+
+    def import_faq_hits(self, items: list) -> None:
+        """一次性迁移旧版 faq.json 里的 hits 计数。已迁移过的条目以 SQLite 为准。"""
+        for it in items:
+            n = int(it.get("hits") or 0)
+            if n > 0 and it.get("id"):
+                self._exec(
+                    "INSERT OR IGNORE INTO faq_hits(faq_id,hits,updated_at) VALUES(?,?,?)",
+                    (it["id"], n, datetime.now().isoformat(timespec="seconds")))
+
+    # ---- 登录会话（可选身份保护，见 load_users_file / auth_enabled）----
+    def create_session(self, user: str, role: str = "newcomer") -> str:
+        token = secrets.token_hex(16)
+        self._exec("INSERT INTO sessions(token,user,role,created_at) VALUES(?,?,?,?)",
+                   (token, user, role, datetime.now().isoformat(timespec="seconds")))
+        return token
+
+    def session_user(self, token: str):
+        """返回会话行 {token, user, role, ...}；无效 token 返回 None。"""
+        if not token:
+            return None
+        rows = self._query("SELECT token, user, role FROM sessions WHERE token=?", (token,))
+        if not rows:
+            return None
+        r = dict(rows[0])
+        r.setdefault("role", "newcomer")
+        return r
+
+    def drop_session(self, token: str) -> None:
+        self._exec("DELETE FROM sessions WHERE token=?", (token,))
+
+    # ---- 周报 ----
+    def add_weekly(self, user: str, week_label: str, content: str,
+                   score, mode: str, review: dict) -> int:
+        cur = self._exec(
+            "INSERT INTO weeklies(user,week_label,content,score,mode,review,created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (user, week_label, content, score, mode,
+             json.dumps(review or {}, ensure_ascii=False),
+             datetime.now().isoformat(timespec="seconds")))
+        return int(cur.lastrowid)
+
+    def weeklies(self, user: str | None = None, limit: int = 200) -> list:
+        sql = "SELECT * FROM weeklies"
+        args: list = []
+        if user:
+            sql += " WHERE user=?"
+            args.append(user)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        rows = self._query(sql, tuple(args))
+        for r in rows:
+            try:
+                r["review"] = json.loads(r["review"] or "{}")
+            except ValueError:
+                r["review"] = {}
+        return rows
+
+    def latest_weekly_by_user(self) -> dict:
+        """每个用户最近一次周报（导师看板用）。"""
+        rows = self._query(
+            "SELECT w.* FROM weeklies w "
+            "JOIN (SELECT user, MAX(id) AS mid FROM weeklies GROUP BY user) t "
+            "ON w.user=t.user AND w.id=t.mid")
+        return {r["user"]: r for r in rows}
+
+    # ---- 任务中心 ----
+    def add_task(self, title: str, description: str, creator: str, assignee: str) -> int:
+        cur = self._exec(
+            "INSERT INTO tasks(title,description,creator,assignee,created_at) VALUES(?,?,?,?,?)",
+            (title, description, creator, assignee,
+             datetime.now().isoformat(timespec="seconds")))
+        return int(cur.lastrowid)
+
+    def add_task_item(self, task_id: int, title: str, itype: str, content: str) -> int:
+        """添加任务子项：一个任务可拆多个子项（问题回答 / 需求 / 其他）。"""
+        cur = self._exec(
+            "INSERT INTO task_items(task_id,title,itype,content,created_at) VALUES(?,?,?,?,?)",
+            (task_id, title, itype, content, datetime.now().isoformat(timespec="seconds")))
+        return int(cur.lastrowid)
+
+    def task_items(self, task_id: int) -> list:
+        return self._query(
+            "SELECT * FROM task_items WHERE task_id=? ORDER BY id", (task_id,))
+
+    def get_task_item(self, item_id: int):
+        rows = self._query("SELECT * FROM task_items WHERE id=?", (item_id,))
+        return rows[0] if rows else None
+
+    def delete_task_item(self, item_id: int) -> None:
+        """删除子项并级联清理其附件与反馈。"""
+        for f in self._query(
+                "SELECT stored_name FROM uploads WHERE kind='item' AND owner_id=?", (item_id,)):
+            try:
+                (FILES_DIR / f["stored_name"]).unlink()
+            except OSError:
+                pass
+        self._exec("DELETE FROM uploads WHERE kind='item' AND owner_id=?", (item_id,))
+        fb_ids = [r["id"] for r in self._query(
+            "SELECT id FROM task_feedbacks WHERE item_id=?", (item_id,))]
+        for fid in fb_ids:
+            for f in self._query(
+                    "SELECT stored_name FROM uploads WHERE kind='feedback' AND owner_id=?", (fid,)):
+                try:
+                    (FILES_DIR / f["stored_name"]).unlink()
+                except OSError:
+                    pass
+            self._exec("DELETE FROM uploads WHERE kind='feedback' AND owner_id=?", (fid,))
+        self._exec("DELETE FROM task_feedbacks WHERE item_id=?", (item_id,))
+        self._exec("DELETE FROM task_items WHERE id=?", (item_id,))
+
+    def tasks_all(self, limit: int = 100) -> list:
+        return self._query(
+            "SELECT * FROM tasks ORDER BY id DESC LIMIT ?", (limit,))
+
+    def get_task(self, task_id: int):
+        rows = self._query("SELECT * FROM tasks WHERE id=?", (task_id,))
+        return rows[0] if rows else None
+
+    def delete_task(self, task_id: int) -> None:
+        for f in self._query(
+                "SELECT stored_name FROM uploads WHERE kind='task' AND owner_id=?", (task_id,)):
+            try:
+                (FILES_DIR / f["stored_name"]).unlink()
+            except OSError:
+                pass
+        self._exec("DELETE FROM uploads WHERE kind='task' AND owner_id=?", (task_id,))
+        fb_ids = [r["id"] for r in self._query(
+            "SELECT id FROM task_feedbacks WHERE task_id=?", (task_id,))]
+        for fid in fb_ids:
+            for f in self._query(
+                    "SELECT stored_name FROM uploads WHERE kind='feedback' AND owner_id=?", (fid,)):
+                try:
+                    (FILES_DIR / f["stored_name"]).unlink()
+                except OSError:
+                    pass
+            self._exec("DELETE FROM uploads WHERE kind='feedback' AND owner_id=?", (fid,))
+        self._exec("DELETE FROM task_feedbacks WHERE task_id=?", (task_id,))
+        for it in self._query("SELECT id FROM task_items WHERE task_id=?", (task_id,)):
+            self.delete_task_item(it["id"])
+        self._exec("DELETE FROM task_items WHERE task_id=?", (task_id,))
+        self._exec("DELETE FROM tasks WHERE id=?", (task_id,))
+
+    def add_upload(self, kind: str, owner_id: int, filename: str,
+                   stored_name: str, size: int, mime: str) -> int:
+        cur = self._exec(
+            "INSERT INTO uploads(kind,owner_id,filename,stored_name,size,mime,created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (kind, owner_id, filename, stored_name, size, mime,
+             datetime.now().isoformat(timespec="seconds")))
+        return int(cur.lastrowid)
+
+    def uploads_for(self, kind: str, owner_id: int) -> list:
+        return self._query(
+            "SELECT * FROM uploads WHERE kind=? AND owner_id=? ORDER BY id", (kind, owner_id))
+
+    def get_upload(self, upload_id: int):
+        rows = self._query("SELECT * FROM uploads WHERE id=?", (upload_id,))
+        return rows[0] if rows else None
+
+    def add_feedback(self, task_id: int, item_id: int, user: str, content: str) -> int:
+        cur = self._exec(
+            "INSERT INTO task_feedbacks(task_id,item_id,user,content,status,created_at) "
+            "VALUES(?,?,?,?, 'submitted',?)",
+            (task_id, item_id, user, content, datetime.now().isoformat(timespec="seconds")))
+        return int(cur.lastrowid)
+
+    def feedbacks_for_item(self, item_id: int) -> list:
+        return self._query(
+            "SELECT * FROM task_feedbacks WHERE item_id=? ORDER BY id", (item_id,))
+
+    def confirm_feedback(self, feedback_id: int, note: str) -> int:
+        cur = self._exec(
+            "UPDATE task_feedbacks SET status='confirmed', note=? WHERE id=?",
+            (note, feedback_id))
+        return cur.rowcount
 
     # ---- FAQ 沉淀候选池 ----
     def candidates(self, status: str = "open") -> list:
@@ -704,6 +989,7 @@ class LLM:
             cfg["enabled"] = True
         self.cfg = cfg
         self.enabled = bool(cfg.get("enabled") and cfg.get("base_url") and cfg.get("model"))
+        self.last_error = ""
 
     @property
     def status(self) -> dict:
@@ -712,6 +998,7 @@ class LLM:
             "base_url": self.cfg.get("base_url", ""),
             "model": self.cfg.get("model", ""),
             "has_key": bool(self.cfg.get("api_key")),
+            "last_error": getattr(self, "last_error", "") or "",
         }
 
     def chat(self, messages: list, temperature: float = 0.3, max_tokens: int = 1200):
@@ -767,9 +1054,14 @@ LLM_CLIENT = LLM(SETTINGS)
 
 
 def reload_all() -> None:
-    global SETTINGS, LLM_CLIENT
+    global LLM_CLIENT
     LOAD_WARNINGS.clear()
-    SETTINGS = _merged_settings()
+    # 原地更新 SETTINGS，而不是重新绑定：server.py / agents.py 都是
+    # "from core import SETTINGS" 按引用导入的，重新绑定会让它们手里
+    # 的旧字典永远停留在启动时的值——页面改了配置要重启才生效。
+    new_settings = _merged_settings()
+    SETTINGS.clear()
+    SETTINGS.update(new_settings)
     KB.load()
     LLM_CLIENT.reload(SETTINGS)
 
@@ -829,6 +1121,8 @@ def validate_data() -> list:
             err(f"faq.json/{fid}", f"status 必须是 {'/'.join(sorted(VALID_STATUS))}，当前为 {it.get('status')!r}")
         if it.get("status") == "published" and not it.get("review_date"):
             bad(f"faq.json/{fid}", "已发布但缺少 review_date")
+        if it.get("status") == "published" and str(it.get("a") or "").strip().startswith("待补充"):
+            bad(f"faq.json/{fid}", "已发布但答案仍是『待补充』占位内容，会把占位文案当正式答案自动回复")
     fdup = {i for i in faq_ids if faq_ids.count(i) > 1}
     for d in fdup:
         err("faq.json", f"FAQ id 重复：{d}")
@@ -858,8 +1152,15 @@ def validate_data() -> list:
                 if not q.get("explain"):
                     bad(f"paths/{pid}/{sid}/{q.get('id')}", "没有 explain，新人答错后看不到解析")
     for t in load_json(DATA_DIR / "users.json", {}).get("users") or []:
-        if t.get("track") not in seen_path_tracks:
+        # 导师账号不参与成长地图，track 允许为空
+        if str(t.get("role") or "newcomer") != "mentor" and t.get("track") not in seen_path_tracks:
             err("users.json", f"用户 {t.get('id')} 的 track={t.get('track')!r} 没有对应的关卡地图")
+        pin = str(t.get("pin") or "").strip()
+        if pin and not re.fullmatch(r"\d{4}", pin):
+            err("users.json", f"用户 {t.get('id')} 的 pin 必须是 4 位数字（当前 {t.get('pin')!r}）")
+        role = str(t.get("role") or "newcomer")
+        if role not in ("mentor", "newcomer"):
+            err("users.json", f"用户 {t.get('id')} 的 role 必须是 mentor 或 newcomer（当前 {role!r}）")
 
     # ---- 评分标准 ----
     rubric_ids = []

@@ -14,6 +14,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# 输出被重定向（管道 / CI / 钩子）时 Python 退回本地编码（中文 Windows 是 GBK），强制 UTF-8
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (ValueError, OSError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import core  # noqa: E402

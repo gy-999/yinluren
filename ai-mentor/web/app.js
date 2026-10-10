@@ -1,24 +1,35 @@
 /* 引路人 · AI 导师 —— 前端（原生 JS，无构建） */
 'use strict';
 
+const ROLE = window.APP_ROLE || 'newcomer';   // 双端分离：index.html=新人端，mentor.html=导师端
+
 const state = {
   user: localStorage.getItem('mentor.user') || 'demo',
+  token: localStorage.getItem('mentor.token') || '',
+  project: localStorage.getItem('mentor.project') || '',
   meta: null,
-  view: 'ask',
+  view: ROLE === 'mentor' ? 'dashboard' : 'ask',
   chat: [],          // 问答记录
   coach: null,       // 当前陪练会话
   exam: null,        // 当前考试
 };
 
 const TITLES = {
-  ask: '问答助手', path: '成长地图', coach: '陪练室', review: '作业批改',
+  ask: '问答助手', tasks: '任务中心', weekly: '周报', path: '成长地图', coach: '陪练室',
   env: '环境自检', profile: '我的档案', dashboard: '导师看板', kb: '知识库', settings: '设置',
 };
 
 /* ---------------------------------------------------------------- 基础 */
 
 async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ 'X-Token': state.token }, opts.headers || {});
   const res = await fetch(path, opts);
+  if (res.status === 401 || res.status === 403) {
+    const data = await res.json().catch(() => ({ error: 'HTTP ' + res.status }));
+    if (data.auth_required) showLogin(data.error);
+    return data;
+  }
   const text = await res.text();
   try { return JSON.parse(text); }
   catch (e) { return { error: '返回内容无法解析：' + text.slice(0, 200) }; }
@@ -134,14 +145,16 @@ function radarSvg(items) {
 
 /* ---------------------------------------------------------------- 视图：问答 */
 
-function viewAsk() {
-  const msgs = state.chat.map(m => {
+async function viewAsk() {
+  const mine = await get('/api/escalations/mine?user=' + encodeURIComponent(state.user));
+  const mineItems = (mine.items || []).slice(0, 8);
+  const msgs = state.chat.map((m, idx) => {
     if (m.role === 'user') {
       return `<div class="msg me"><div class="avatar">我</div><div class="bubble">${esc(m.text)}</div></div>`;
     }
     let body = '';
     if (m.escalated) {
-      body = `<div class="hint warn"><b>已转人工</b>：${esc(m.reason)}<br>请直接联系 ${esc(m.contact || '导师')}。
+      body = `<div class="hint warn"><b>已转人工</b>：${esc(m.reason)}<br>导师回复后会出现在下方「我的求助」里，也可直接找 ${esc(m.contact || '导师')}。
         这条问题已自动进入 FAQ 沉淀池，问的人多了就会变成知识条目。</div>`;
     } else {
       body = `<div class="md">${md(m.text)}</div>`;
@@ -153,21 +166,42 @@ function viewAsk() {
             <span><b>${esc(s.title)}</b>　${esc(s.owner)}　${esc(s.source || '')}
             ${s.stale ? '<span class="tag warn">待复核</span>' : ''}</span></div>`).join('') + '</div>';
       }
-      body += `<div class="small muted" style="margin-top:8px">相关度 ${relPct(m.confidence)}%　·　词覆盖 ${Math.round((m.coverage || 0) * 100)}%　·　${m.mode === 'llm' ? '模型生成（基于知识库）' : '知识库原文直出'}</div>`;
+      body += `<div class="small muted" style="margin-top:8px">相关度 ${relPct(m.confidence)}%　·　词覆盖 ${Math.round((m.coverage || 0) * 100)}%　·　${m.mode === 'llm' ? 'AI + 知识库生成' : '知识库原文直出'}</div>`;
+      body += `<div class="row" style="margin-top:10px">
+        <button class="btn sm" data-solved="${idx}">✅ 已解决</button>
+        <button class="btn sm" data-esc="${idx}">✉ 没答好？联系导师</button>
+        ${m.solved ? '<span class="tag ok">已解决</span>' : ''}
+        ${m.escNote ? '<span class="tag warn">已转导师</span>' : ''}
+      </div>`;
     }
     return `<div class="msg bot"><div class="avatar">引</div><div class="bubble">${body}</div></div>`;
   }).join('');
 
+  const mineHtml = mineItems.map(e => `<div class="kv" style="align-items:flex-start">
+    <b>${e.status === 'done' ? '<span class="tag ok">已回复</span>' : '<span class="tag warn">待导师回复</span>'}</b>
+    <span>${esc(e.question)}
+      <div class="small muted">${esc(e.reason)} · ${esc(String(e.created_at).slice(5, 16).replace('T', ' '))}</div>
+      ${e.answer ? `<div class="hint ok" style="margin-top:5px"><b>导师回复</b>：${esc(e.answer)}</div>` : ''}
+    </span></div>`).join('');
+
   return `<div class="chat stack">
     ${state.chat.length ? '' : `<div class="card"><div class="card-body">
       <div class="hint">问什么都可以：环境怎么搭、流程怎么走、这个需求该怎么理解、报销找谁……
-        <b>答案一定附出处</b>；知识库里没有的，我不会编，会直接转给导师。</div>
+        <b>答案由 AI 基于知识库生成，一定附出处</b>；没答好可以一键转给导师，回复会回到这个页面。</div>
       <div class="row" style="margin-top:12px">
         ${['开发环境怎么搭？', '需求评审的流程是什么？', '请假流程怎么走？', '代码提交规范有哪些？']
           .map(q => `<button class="btn sm" data-quick="${esc(q)}">${esc(q)}</button>`).join('')}
       </div></div></div>`}
     ${msgs}
     <div class="card"><div class="card-body">
+      <div class="row" style="align-items:center;gap:10px;margin-bottom:10px">
+        <label class="small muted">知识范围</label>
+        <select id="proj-sel" style="max-width:240px">
+          <option value="">通用知识库</option>
+          ${((state.meta && state.meta.projects) || []).map(p => `<option value="${esc(p.id)}" ${state.project === p.id ? 'selected' : ''}>项目：${esc(p.name)}</option>`).join('')}
+        </select>
+        <span class="muted small">选中项目后，回答优先命中该项目的知识库（各项目互相独立）</span>
+      </div>
       <div class="askbox">
         <textarea id="q" placeholder="输入你的问题…（Ctrl + Enter 发送）"></textarea>
         <button class="btn primary" id="send">发送</button>
@@ -176,6 +210,18 @@ function viewAsk() {
         <label class="small muted"><input type="checkbox" id="anon" ${state.anon ? 'checked' : ''}> 匿名提问（导师看板会显示"匿名"）</label>
       </div>
     </div></div>
+    <div class="card" style="margin-top:14px"><div class="card-head"><h3>✉ 联系导师</h3>
+        <span class="small muted">不用等 AI：把问题直接发给导师，回复回到下方「我的求助」</span></div>
+      <div class="card-body">
+        <textarea id="contact-q" rows="2" placeholder="写下你的问题，直接发给导师"></textarea>
+        <div class="row" style="margin-top:8px">
+          <input type="text" id="contact-note" placeholder="补充说明（可留空）" style="flex:1">
+          <button class="btn primary sm" id="contact-send">发送给导师</button>
+        </div>
+      </div></div>
+    ${mineItems.length ? `<div class="card"><div class="card-head"><h3>我的求助</h3>
+      <span class="small muted">点「联系导师」后，导师的回复会出现在这里</span></div>
+      <div class="card-body">${mineHtml}</div></div>` : ''}
   </div>`;
 }
 
@@ -189,9 +235,9 @@ function bindAsk() {
     render();
     const anon = document.getElementById('anon');
     state.anon = anon ? anon.checked : false;
-    const res = await post('/api/ask', { user: state.user, question: q, anonymous: state.anon });
+    const res = await post('/api/ask', { user: state.user, question: q, anonymous: state.anon, project: state.project || '' });
     state.chat.push({
-      role: 'bot', text: res.answer || '', sources: res.sources || [],
+      role: 'bot', text: res.answer || '', sources: res.sources || [], q: q,
       escalated: res.escalated, reason: res.reason, contact: res.contact,
       confidence: res.confidence || 0, mode: res.mode, caveat: res.caveat,
       notice: res.notice, coverage: res.coverage,
@@ -200,12 +246,52 @@ function bindAsk() {
     const v = document.getElementById('view');
     v.scrollTop = v.scrollHeight;
   };
+  const psel = document.getElementById('proj-sel');
+  if (psel) psel.onchange = () => {
+    state.project = psel.value;
+    localStorage.setItem('mentor.project', state.project);
+    toast(psel.value ? '已切换到项目知识库' : '已切换到通用知识库');
+  };
+  const csend = document.getElementById('contact-send');
+  if (csend) csend.onclick = async () => {
+    const q = document.getElementById('contact-q').value.trim();
+    if (!q) { toast('请写下你的问题'); return; }
+    const r = await post('/api/ask/escalate', {
+      user: state.user, question: q,
+      note: document.getElementById('contact-note').value.trim(),
+    });
+    if (r.error) { toast(r.error); return; }
+    document.getElementById('contact-q').value = '';
+    document.getElementById('contact-note').value = '';
+    toast('已发给导师，回复会出现在「我的求助」');
+    render();
+  };
   document.getElementById('send').onclick = send;
   ta.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
   });
   document.querySelectorAll('[data-quick]').forEach(b => {
     b.onclick = () => { ta.value = b.dataset.quick; send(); };
+  });
+  document.querySelectorAll('[data-solved]').forEach(b => {
+    b.onclick = () => {
+      const m = state.chat[+b.dataset.solved];
+      if (m) m.solved = true;
+      toast('好的，这条就先这样');
+      render();
+    };
+  });
+  document.querySelectorAll('[data-esc]').forEach(b => {
+    b.onclick = async () => {
+      const m = state.chat[+b.dataset.esc];
+      if (!m) return;
+      const note = prompt('想补充给导师的说明（可留空）：') || '';
+      const r = await post('/api/ask/escalate', { user: state.user, question: m.q || '', note });
+      if (r.error) { toast(r.error); return; }
+      m.escNote = true;
+      toast('已转给导师，回复会出现在「我的求助」里');
+      render();
+    };
   });
   ta.focus();
 }
@@ -416,79 +502,6 @@ function bindCoach() {
   if (back) back.onclick = () => { state.coach = null; render(); };
 }
 
-/* ---------------------------------------------------------------- 视图：作业批改 */
-
-async function viewReview() {
-  const data = await get('/api/rubrics');
-  const rubrics = data.rubrics || [];
-  const cur = state.reviewRubric || (rubrics[0] || {}).id || '';
-  return `<div class="card"><div class="card-head"><h3>提交作业 / 代码，AI 先批一遍</h3>
-      <span class="small muted">导师只需要看标红项</span></div>
-    <div class="card-body">
-      <div class="grid g2">
-        <div>
-          <label class="small muted">评分标准</label>
-          <select class="input" id="rubric-sel">
-            ${rubrics.map(r => `<option value="${esc(r.id)}" ${r.id === cur ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}
-          </select>
-          <div id="rubric-detail" class="small muted" style="margin-top:10px"></div>
-        </div>
-        <div>
-          <label class="small muted">标题（可选）</label>
-          <input type="text" id="review-title" placeholder="例如：第一次需求分析作业">
-        </div>
-      </div>
-      <div style="margin-top:14px">
-        <label class="small muted">内容</label>
-        <textarea id="review-text" placeholder="粘贴你的代码、方案、话术稿或作业正文…"></textarea>
-      </div>
-      <div class="row" style="margin-top:12px">
-        <button class="btn primary" id="review-submit">提交批改</button>
-        <span class="small muted">评分结果自动计入成长档案</span>
-      </div>
-      <div id="review-result" style="margin-top:16px"></div>
-    </div></div>`;
-  }
-
-function bindReview() {
-  const sel = document.getElementById('rubric-sel');
-  const showDetail = async () => {
-    state.reviewRubric = sel.value;
-    const data = await get('/api/rubrics');
-    const r = (data.rubrics || []).find(x => x.id === sel.value);
-    document.getElementById('rubric-detail').innerHTML = r
-      ? '评分维度：' + r.items.map(i => `${esc(i.name)}(${i.weight}%)`).join('、') : '';
-  };
-  sel.onchange = showDetail; showDetail();
-
-  document.getElementById('review-submit').onclick = async () => {
-    const text = document.getElementById('review-text').value.trim();
-    if (!text) { toast('先粘贴要批改的内容'); return; }
-    const box = document.getElementById('review-result');
-    box.innerHTML = '<span class="spinner"></span> 正在批改…';
-    const res = await post('/api/review', {
-      rubric: sel.value, text, user: state.user,
-      title: document.getElementById('review-title').value.trim(),
-    });
-    if (res.error) { box.innerHTML = esc(res.error); return; }
-    box.innerHTML = `<div class="card"><div class="card-head">
-        <h3>批改结果</h3>
-        <span class="tag ${res.mode === 'llm' ? 'accent' : 'warn'}">${res.mode === 'llm' ? '模型评分' : '本地启发式评分'}</span>
-      </div><div class="card-body">
-        <div class="row" style="gap:16px;align-items:center">${ring(res.total)}
-          <div><div style="font-weight:650">${esc(res.summary)}</div>
-          ${res.needs_review.length ? `<div class="small" style="color:var(--warn)">${res.needs_review.length} 项 AI 拿不准，已标记给导师终审</div>` : ''}</div></div>
-        <div style="margin-top:14px">${res.items.map(i => `<div style="margin-bottom:11px">
-            <div class="spread"><b>${esc(i.name)}</b>
-              <span>${i.needs_review ? '<span class="tag warn">待导师终审</span>' : ''}
-              <span class="small muted">${i.score}/5　权重 ${i.weight}%</span></span></div>
-            <div class="bar ${scoreClass(i.score / 5 * 100)}"><i style="width:${i.score / 5 * 100}%"></i></div>
-            <div class="small muted" style="margin-top:4px">${esc(i.reason)}</div>
-          </div>`).join('')}</div>
-      </div></div>`;
-  };
-}
-
 /* ---------------------------------------------------------------- 视图：环境自检 */
 
 async function viewEnv() {
@@ -575,112 +588,108 @@ async function viewProfile() {
 async function viewDashboard() {
   const d = await get('/api/dashboard');
   if (d.error) return `<div class="card"><div class="card-body">${esc(d.error)}</div></div>`;
-  const c = d.counters || {}, a = d.alerts || {};
+  const c = d.counters || {};
 
-  const alerts = [];
-  if ((a.stuck || []).length) alerts.push(`<div class="hint warn"><b>进度停滞预警</b>：${a.stuck.map(esc).join('、')} 已连续多日没有推进，建议主动找他们聊聊。</div>`);
-  if ((a.overdue_knowledge || []).length) alerts.push(`<div class="hint warn"><b>知识过期</b>：${a.overdue_knowledge.length} 条知识已过复核日期，尽快确认是否仍然有效。</div>`);
-  if (!alerts.length) alerts.push('<div class="hint ok">暂时没有需要处理的预警。</div>');
+  const escList = (d.escalations || []).map(e => `<div class="kv" style="align-items:flex-start">
+      <b>${esc(e.user_name)}</b><span>${esc(e.question)}
+        <div class="small muted">${esc(e.reason)} · ${esc(String(e.created_at).slice(5, 16).replace('T', ' '))}</div>
+        <div class="row" style="margin-top:6px">
+          <input type="text" data-ans-input="${e.id}" placeholder="回复答案（新人端可见）" style="flex:1;min-width:220px">
+          <button class="btn sm primary" data-ans="${e.id}">回复并关闭</button>
+        </div></span></div>`).join('');
+
+  const msgs = (d.messages || []).map(m => `<div class="kv" style="align-items:flex-start">
+      <b>${esc(m.user_name)}</b><span>【${esc(m.task_title)} / ${esc(m.item_title)}】${md(m.content)}
+        <span class="tag ${m.status === 'confirmed' ? 'ok' : 'warn'}">${m.status === 'confirmed' ? '已确认' : '待确认'}</span>
+        <span class="muted small">${esc(String(m.created_at).slice(5, 16).replace('T', ' '))}</span></span></div>`).join('');
+
+  const weeks = (d.weeklies || []).map(w => `<div class="kv" style="align-items:flex-start">
+      <b>${esc(w.user_name)}</b><span>${esc(w.week_label)}
+        <span class="tag ${w.score >= 80 ? 'ok' : w.score >= 60 ? 'warn' : 'bad'}">${w.score != null ? w.score + ' 分' : '—'}</span>
+        <details style="margin-top:4px"><summary class="small muted" style="cursor:pointer">查看内容</summary>
+          <div class="md" style="margin-top:6px">${md(w.content)}</div></details></span></div>`).join('');
+
+  const projects = (state.meta && state.meta.projects) || [];
+  const projList = projects.length ? projects.map(p => `<div class="kv"><b>${esc(p.name)}</b>
+      <span class="muted small">${esc(p.description || '')} · 导入于 ${esc(p.created_at)}</span></div>`).join('')
+      : '<div class="muted small">还没有导入项目</div>';
 
   return `<div class="grid g4">
-      ${[['在培新人', c.newcomers], ['待人工回答', c.open_escalations], ['待确认 FAQ 草稿', c.drafts], ['知识过期', c.overdue]]
+      ${[['待回复问题', c.pending_questions], ['新消息', c.messages], ['收到周报', c.weeklies]]
         .map(([l, v]) => `<div class="card stat"><div class="n">${v == null ? '—' : v}</div><div class="l">${l}</div></div>`).join('')}
     </div>
-    <div class="card" style="margin-top:16px"><div class="card-head"><h3>预警与待办</h3></div>
-      <div class="card-body stack">${alerts.join('')}
-        ${(a.ready_to_draft || []).length ? `<div class="hint warn"><b>${a.ready_to_draft.length} 个问题已被重复问到</b>，建议沉淀成 FAQ（一键生成草稿）：
-          <div style="margin-top:8px">${a.ready_to_draft.map(c2 => `<div class="spread" style="padding:4px 0">
-            <span>「${esc(c2.sample_question)}」<span class="tag warn">被问 ${c2.count} 次</span></span>
-            <button class="btn sm" data-draft="${c2.id}">生成 FAQ 草稿</button></div>`).join('')}</div></div>` : ''}
-      </div></div>
 
-    <div class="card" style="margin-top:16px"><div class="card-head"><h3>新人进度一览</h3>
-      <span class="small muted">不排名，只看谁需要帮助</span></div>
-      <div class="card-body" style="padding:0">
-        <table class="grid-t"><thead><tr><th>新人</th><th>方向</th><th>通关进度</th><th>能力分</th><th>状态</th></tr></thead>
-        <tbody>${(d.users || []).map(u => `<tr>
-          <td><b>${esc(u.name)}</b><div class="small muted">${esc(u.id)}</div></td>
-          <td><span class="tag">${esc(u.track || '—')}</span></td>
-          <td style="min-width:150px"><div class="small muted">${u.passed} / ${u.total}</div>
-            <div class="progress"><i style="width:${u.percent}%"></i></div></td>
-          <td class="small">${Object.entries(u.dimensions || {}).map(([k, v]) => `${esc(k)} ${v}`).join('<br>') || '<span class="muted">—</span>'}</td>
-          <td>${u.stuck ? `<span class="tag bad">停滞 ${u.idle_days} 天</span>` : '<span class="tag ok">正常</span>'}
-            ${u.open_escalations ? `<span class="tag warn">待答 ${u.open_escalations}</span>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有新人档案</div></td></tr>'}</tbody></table>
-      </div></div>
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3>新人问题 · 回复后新人端可见</h3></div>
+      <div class="card-body scroll">${escList || '<div class="empty">暂时没有待回复的问题</div>'}</div></div>
 
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><div class="card-head"><h3>需要导师回答的问题</h3></div>
-        <div class="card-body scroll">
-          ${(a.escalations || []).length ? a.escalations.map(e => `<div class="kv">
-            <b>${esc(e.user)}</b><span>${esc(e.question)}<div class="small muted">${esc(e.reason)}　·　${esc(e.created_at.slice(5, 16).replace('T', ' '))}</div></span></div>`).join('')
-            : '<div class="empty">没有待处理的转人工问题</div>'}
-        </div></div>
-      <div class="card"><div class="card-head"><h3>最近提问</h3></div>
-        <div class="card-body scroll">
-          ${(d.recent_questions || []).map(q => `<div class="kv"><b>${esc(q.user)}</b>
-            <span>${esc(q.question)} ${q.escalated ? '<span class="tag bad">未答上</span>' : '<span class="tag ok">已自动回答</span>'}</span></div>`).join('')
-            || '<div class="empty">还没有提问记录</div>'}
-        </div></div>
-    </div>
-
-    <div class="card" style="margin-top:16px"><div class="card-head"><h3>待确认的 FAQ 草稿</h3>
-      <span class="small muted">确认后即进入检索池，同类问题不再打扰你</span></div>
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3>收件箱 · 新人消息与周报</h3>
+      <a class="btn sm" href="/api/weekly/export" download="周报导出.md">⬇ 导出全部周报为文件</a></div>
       <div class="card-body">
-        ${(a.pending_drafts || []).length ? a.pending_drafts.map(f => `<div style="padding:12px 0;border-bottom:1px solid var(--line-2)">
-          <div class="spread"><b>${esc(f.q)}</b><span class="tag warn">被问 ${f.asked_count || 1} 次</span></div>
-          <textarea data-faq-a="${esc(f.id)}" style="margin-top:9px;min-height:88px">${esc(f.a)}</textarea>
-          <div class="row" style="margin-top:8px">
-            <button class="btn primary sm" data-faq-pub="${esc(f.id)}">确认发布</button>
-            <button class="btn sm" data-faq-del="${esc(f.id)}">删除</button>
-          </div></div>`).join('') : '<div class="empty">没有待确认的草稿。新人问到知识库没有的问题时，这里会自动出现草稿。</div>'}
+        <div class="small muted" style="margin-bottom:6px">任务反馈（新人消息）</div>
+        ${msgs || '<div class="empty">还没有收到消息</div>'}
+        <div class="small muted" style="margin:12px 0 6px">周报</div>
+        ${weeks || '<div class="empty">还没有收到周报</div>'}
       </div></div>
 
-    <div class="card" style="margin-top:16px"><div class="card-head"><h3>沉淀候选池</h3>
-      <span class="small muted">AI 没答上来的问题，会被自动聚类到这里</span></div>
-      <div class="card-body scroll">
-        ${(a.candidates || []).length ? a.candidates.map(c2 => `<div class="kv">
-          <b>${c2.count >= (c2._t || 2) ? '<span class="tag bad">高频</span>' : '<span class="tag">低</span>'}</b>
-          <span>「${esc(c2.sample_question)}」<span class="small muted">被问 ${c2.count} 次</span>
-          <button class="btn sm" data-draft="${c2.id}" style="margin-left:8px">生成草稿</button></span></div>`).join('')
-          : '<div class="empty">候选池为空</div>'}
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3>项目知识库</h3>
+        <span class="small muted">导入项目文件，AI 自动生成该项目专属知识库；各项目互相独立，新人端按项目分别提问</span></div>
+      <div class="card-body">
+        ${projList}
+        <div style="margin-top:10px;border-top:1px solid var(--line-2);padding-top:10px">
+          <div class="grid g2">
+            <div><label class="small muted">项目名称</label>
+              <input type="text" id="pj-name" placeholder="如：卫星遥测项目"></div>
+            <div><label class="small muted">项目说明（可选）</label>
+              <input type="text" id="pj-desc" placeholder="一句话说明这个项目"></div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <input type="file" id="pj-files" multiple style="max-width:360px">
+            <button class="btn primary" id="pj-import">导入并生成知识库</button>
+          </div>
+          <div class="small muted" style="margin-top:6px">支持代码与文本文件（依赖清单如 requirements.txt / package.json 会被重点分析）；未接入大模型时生成资料清单与依赖线索的保底版本。</div>
+        </div>
       </div></div>`;
 }
 
 function bindDashboard() {
-  document.querySelectorAll('[data-draft]').forEach(b => {
+  document.querySelectorAll('[data-ans]').forEach(b => {
     b.onclick = async () => {
-      const res = await post('/api/faq/draft', { candidate_id: +b.dataset.draft });
-      if (res.error) { toast(res.error); return; }
-      toast('已生成 FAQ 草稿，请在下方确认');
-      render();
+      const input = document.querySelector('[data-ans-input="' + b.dataset.ans + '"]');
+      const answer = (input && input.value.trim()) || '';
+      if (!answer) { toast('请填写回复内容'); return; }
+      const r = await post('/api/escalation/answer', { id: +b.dataset.ans, answer });
+      toast(r.error ? r.error : '已回复，新人可在问答页看到');
+      if (!r.error) render();
     };
   });
-  document.querySelectorAll('[data-faq-pub]').forEach(b => {
-    b.onclick = async () => {
-      const id = b.dataset.faqPub;
-      const ta = document.querySelector(`[data-faq-a="${id}"]`);
-      const res = await post('/api/faq/publish', { id, a: ta ? ta.value : '' });
-      if (res.error) { toast(res.error); return; }
-      toast('已发布，后续同类问题会自动命中');
-      render();
-    };
-  });
-  document.querySelectorAll('[data-faq-del]').forEach(b => {
-    b.onclick = async () => {
-      await post('/api/faq/delete', { id: b.dataset.faqDel });
-      toast('已删除'); render();
-    };
-  });
+  const imp = document.getElementById('pj-import');
+  if (imp) imp.onclick = async () => {
+    const name = document.getElementById('pj-name').value.trim();
+    if (!name) { toast('请填写项目名称'); return; }
+    const fd = new FormData();
+    fd.append('name', name);
+    fd.append('description', document.getElementById('pj-desc').value);
+    for (const f of document.getElementById('pj-files').files) fd.append('files', f);
+    imp.disabled = true;
+    toast('正在导入并生成知识库…');
+    const r = await postForm('/api/projects/import', fd);
+    imp.disabled = false;
+    if (r.error) { toast(r.error); return; }
+    toast('项目已导入，AI 生成了 ' + r.generated + ' 条知识');
+    state.meta = await get('/api/meta');
+    render();
+  };
 }
 
 /* ---------------------------------------------------------------- 视图：知识库 */
 
 async function viewKb() {
+  const drafts = await get('/api/faq/drafts');
+
   const q = state.kbQuery || '';
   const data = await get('/api/kb' + (q ? '?q=' + encodeURIComponent(q) : ''));
   const items = data.items || [];
-  return `<div class="card"><div class="card-head"><h3>知识库</h3>
+  return `${faqCard(drafts)}<div class="card"><div class="card-head"><h3>知识库</h3>
       <span class="small muted">每条知识都有责任人和复核日期，过期会被标红</span></div>
     <div class="card-body">
       <div class="row">
@@ -704,7 +713,55 @@ async function viewKb() {
     <div id="kb-detail"></div>`;
 }
 
+function faqCard(drafts) {
+  const a = drafts || {};
+  const trigger = a.trigger || 2;
+  const pending = a.drafts || [];
+  const cands = a.candidates || [];
+  return `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>FAQ 沉淀</h3>
+      <span class="small muted">新人重复问的问题自动变草稿，确认后进入检索池，下一届不再打扰</span></div>
+    <div class="card-body">
+      <div class="small muted">待确认草稿</div>
+      ${pending.length ? pending.map(f => `<div style="padding:10px 0;border-bottom:1px solid var(--line-2)">
+        <div class="spread"><b>${esc(f.q)}</b><span class="tag warn">被问 ${f.asked_count || 1} 次</span></div>
+        <textarea data-faq-a="${esc(f.id)}" style="margin-top:8px;min-height:80px">${esc(f.a)}</textarea>
+        <div class="row" style="margin-top:6px">
+          <button class="btn primary sm" data-faq-pub="${esc(f.id)}">确认发布</button>
+          <button class="btn sm" data-faq-del="${esc(f.id)}">删除</button>
+        </div></div>`).join('') : '<div class="muted small">暂无待确认草稿</div>'}
+      <div class="small muted" style="margin:12px 0 6px">沉淀候选池（同一问题被问 ${trigger} 次即可生成草稿）</div>
+      ${cands.length ? cands.slice(0, 10).map(c2 => `<div class="kv"><b>${c2.count >= trigger ? '<span class="tag bad">高频</span>' : '<span class="tag">低</span>'}</b>
+        <span>「${esc(c2.sample_question)}」<span class="small muted">被问 ${c2.count} 次</span>
+        <button class="btn sm" data-draft="${c2.id}" style="margin-left:8px">生成草稿</button></span></div>`).join('') : '<div class="muted small">候选池为空</div>'}
+    </div></div>`;
+}
+
 function bindKb() {
+  document.querySelectorAll('[data-draft]').forEach(b => {
+    b.onclick = async () => {
+      const res = await post('/api/faq/draft', { candidate_id: +b.dataset.draft });
+      if (res.error) { toast(res.error); return; }
+      toast('已生成 FAQ 草稿，请在上方确认');
+      render();
+    };
+  });
+  document.querySelectorAll('[data-faq-pub]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.faqPub;
+      const ta = document.querySelector(`[data-faq-a="${id}"]`);
+      const res = await post('/api/faq/publish', { id, a: ta ? ta.value : '' });
+      if (res.error) { toast(res.error); return; }
+      toast('已发布，后续同类问题会自动命中');
+      render();
+    };
+  });
+  document.querySelectorAll('[data-faq-del]').forEach(b => {
+    b.onclick = async () => {
+      const res = await post('/api/faq/delete', { id: b.dataset.faqDel });
+      toast(res.error ? res.error : '已删除');
+      if (!res.error) render();
+    };
+  });
   const input = document.getElementById('kb-q');
   const doSearch = () => { state.kbQuery = input.value.trim(); render(); };
   document.getElementById('kb-search').onclick = doSearch;
@@ -737,6 +794,7 @@ async function viewSettings() {
   return `<div class="card"><div class="card-head"><h3>大模型配置（可选）</h3>
       <span class="tag ${d.llm_status && d.llm_status.enabled ? 'ok' : 'warn'}">${d.llm_status && d.llm_status.enabled ? '已接入' : '未接入 · 本地模式'}</span></div>
     <div class="card-body">
+      ${d.llm_status && d.llm_status.last_error ? `<div class="hint bad">上次模型调用失败：${esc(d.llm_status.last_error)}</div>` : ''}
       <div class="hint">不填也能用：未接入时，问答直接返回知识库原文并附出处，陪练切换为「结构化引导自省模式」，
         批改使用可解释的本地启发式评分。<b>填入 OpenAI 兼容接口后，问答、陪练、批改会自动升级为模型生成。</b></div>
       <div class="grid g2" style="margin-top:14px">
@@ -807,17 +865,327 @@ function bindSettings() {
     const box = document.getElementById('s-result');
     box.innerHTML = '<span class="spinner"></span> 正在测试…';
     const res = await post('/api/ask', { user: state.user, question: '你好，请回复"连接正常"四个字' });
-    box.innerHTML = res.mode === 'llm'
-      ? '<div class="hint ok">连接正常，模型已可用。</div>'
-      : '<div class="hint warn">没有走通模型（可能未保存配置、Key 无效或网络不通）。当前仍是本地模式，功能不受影响。</div>';
+    if (res.mode === 'llm') {
+      box.innerHTML = '<div class="hint ok">连接正常，模型已可用。</div>';
+      return;
+    }
+    const st = await get('/api/settings');
+    const err = (st.llm_status || {}).last_error;
+    box.innerHTML = '<div class="hint warn">没有走通模型，当前仍是本地模式（功能不受影响）。'
+      + (err ? '失败原因：' + esc(err) : '可能未保存配置、Key 无效或网络不通。') + '</div>';
+  };
+}
+
+/* ---------------------------------------------------------------- 视图：任务中心 */
+
+const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+  : n > 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+
+const fileIcon = (mime, name) => {
+  const m = mime || '';
+  if (m.startsWith('image/')) return '🖼️';
+  if (m.startsWith('video/')) return '🎬';
+  if (m.startsWith('audio/')) return '🎵';
+  const n = (name || '').toLowerCase();
+  if (['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.md', '.txt'].some(e => n.endsWith(e))) return '📄';
+  return '📎';
+};
+
+const fileUrl = (f) => '/api/files/' + f.id
+  + ((state.meta && state.meta.auth_required && state.token)
+    ? '?token=' + encodeURIComponent(state.token) : '');
+
+const postForm = (p, fd) => api(p, { method: 'POST', body: fd });
+
+function attachmentHtml(f) {
+  const icon = fileIcon(f.mime, f.filename);
+  const url = fileUrl(f);
+  if ((f.mime || '').startsWith('video/')) {
+    return `<div class="kv"><b>${icon} ${esc(f.filename)}</b><span>${fmtSize(f.size)}</span></div>
+      <video controls preload="metadata" src="${url}" style="max-width:100%;border-radius:8px;margin:6px 0"></video>`;
+  }
+  if ((f.mime || '').startsWith('image/')) {
+    return `<div class="kv"><b>${icon} ${esc(f.filename)}</b><span>${fmtSize(f.size)}</span></div>
+      <img src="${url}" alt="${esc(f.filename)}" loading="lazy"
+        style="max-width:100%;max-height:340px;border-radius:8px;margin:6px 0;display:block">`;
+  }
+  return `<div class="kv"><b>${icon} ${esc(f.filename)}</b>
+    <span><a href="${url}" download="${esc(f.filename)}">下载</a> · ${fmtSize(f.size)}</span></div>`;
+}
+
+const ITYPE_LABEL = { question: '问题回答', requirement: '需求', general: '其他' };
+
+async function viewTasks() {
+  const d = await get('/api/tasks?user=' + encodeURIComponent(state.user));
+  const users = (state.meta && state.meta.users) || [];
+  const tasks = d.tasks || [];
+
+  const fbBlock = (it) => `
+    <div style="margin-top:8px">
+      ${it.feedbacks.length ? it.feedbacks.map(f => `<div class="kv" style="align-items:flex-start">
+        <b>${esc(f.user_name)}</b>
+        <span><span class="tag ${f.status === 'confirmed' ? 'ok' : 'warn'}">${f.status === 'confirmed' ? '导师已确认' : '待导师确认'}</span>
+          ${f.content ? md(f.content) : ''}
+          ${f.note ? `<div class="hint" style="margin-top:4px">导师点评：${esc(f.note)}</div>` : ''}
+          ${(f.files || []).map(attachmentHtml).join('')}
+          <span class="muted small">${esc(f.created_at)}</span>
+          ${ROLE === 'mentor' && f.status !== 'confirmed' ? `<button class="btn sm" data-confirm="${f.id}" style="margin-top:6px">✓ 确认</button>` : ''}
+        </span></div>`).join('') : '<div class="muted small">这个子项还没有反馈</div>'}
+    </div>`;
+
+  const itemBlock = (t, it) => `
+    <div style="border-top:1px solid var(--line-2);padding:10px 0">
+      <div class="spread"><span><span class="tag ${it.itype === 'question' ? 'accent' : ''}">${ITYPE_LABEL[it.itype] || '其他'}</span>
+        <b>${esc(it.title)}</b></span>
+        <span class="small muted">${it.my_done ? '<span class="tag ok">我已完成</span>' : '待我完成'}</span></div>
+      ${it.content ? `<div class="md" style="margin-top:6px">${md(it.content)}</div>` : ''}
+      ${(it.files || []).length ? `<div style="margin-top:6px">${it.files.map(attachmentHtml).join('')}</div>` : ''}
+      ${fbBlock(it)}
+      ${ROLE === 'newcomer' && !it.my_done ? `<div style="margin-top:8px">
+        <textarea id="fb-text-${it.id}" rows="2" placeholder="完成情况说明（可只传附件）"></textarea>
+        <div class="row" style="margin-top:6px">
+          <input type="file" id="fb-files-${it.id}" multiple style="max-width:300px">
+          <button class="btn primary sm" data-fb="${it.id}" data-task="${t.id}">提交该子项</button>
+        </div>
+      </div>` : ''}
+    </div>`;
+
+  const taskCard = (t) => `
+    <div class="card" style="margin-top:14px">
+      <div class="card-head"><h3>${esc(t.title)}</h3>
+        <span class="tag ${t.my_done ? 'ok' : 'warn'}">${t.items_total ? '子项 ' + t.items_my_done + '/' + t.items_total : '无需反馈'}</span></div>
+      <div class="card-body">
+        <div class="muted small">${esc(t.creator_name)} 发布于 ${esc(t.created_at)}
+          · ${t.assignee ? '指定给 ' + esc(t.assignee_name) : '全员'}</div>
+        ${t.description ? `<div class="md" style="margin-top:8px">${md(t.description)}</div>` : ''}
+        ${(t.files || []).length ? `<div style="margin-top:8px"><div class="small muted">资料附件</div>${t.files.map(attachmentHtml).join('')}</div>` : ''}
+        ${t.items.map(it => itemBlock(t, it)).join('') || '<div class="muted small" style="margin-top:8px">这个任务没有拆子项，看说明即可</div>'}
+        ${ROLE === 'mentor' ? `<div class="row" style="margin-top:10px;justify-content:flex-end">
+          <button class="btn small" data-del="${t.id}">删除任务</button></div>` : ''}
+      </div>
+    </div>`;
+
+  const pubCard = ROLE === 'mentor' ? `
+    <div class="card"><div class="card-head"><h3>发布新任务</h3>
+        <span class="muted small">按需求拆成多个子项：问题回答 / 需求 / 其他；资料附件全员可见</span></div>
+      <div class="card-body">
+        <div style="margin-bottom:12px"><label class="small muted">让 AI 起草（粘贴需求描述，自动填好整张表单，可修改）</label>
+          <div class="row" style="margin-top:4px">
+            <textarea id="t-ai" rows="2" placeholder="需求描述：要做什么、给谁做、验收标准…" style="flex:1"></textarea>
+            <button class="btn sm" id="t-ai-btn">✨ AI 起草</button>
+          </div></div>
+        <div class="grid g2">
+          <div><label class="small muted">任务标题</label>
+            <input type="text" id="t-title" placeholder="如：登录模块开发任务"></div>
+          <div><label class="small muted">指定给</label>
+            <select id="t-assignee"><option value="">全员</option>
+              ${users.map(u => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}</select></div>
+        </div>
+        <div style="margin-top:10px"><label class="small muted">任务说明</label>
+          <textarea id="t-desc" rows="3" placeholder="任务背景、截止时间、验收标准…"></textarea></div>
+        <div style="margin-top:10px"><label class="small muted">资料附件（文档 / 图片 / 视频）</label>
+          <input type="file" id="t-files" multiple style="max-width:340px"></div>
+        <div style="margin-top:12px"><label class="small muted">任务子项</label>
+          <div id="item-rows"></div>
+          <button class="btn sm" id="add-item" style="margin-top:6px">+ 添加子项</button></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" id="t-submit">发布任务</button>
+        </div>
+      </div></div>` : '';
+  return `${pubCard}
+    <div id="tasks-list">${tasks.map(taskCard).join('') ||
+      '<div class="empty" style="margin-top:16px">还没有任务</div>'}</div>`;
+}
+
+function bindTasks() {
+  let rowN = 0;
+  const rows = document.getElementById('item-rows');
+  const addItemRow = (data) => {
+    if (!rows) return;
+    const n = rowN++;
+    const div = document.createElement('div');
+    div.style.cssText = 'border:1px solid var(--line-2);border-radius:8px;padding:10px;margin-top:8px';
+    const itype = (data && data.itype) || 'general';
+    div.innerHTML = `
+      <div class="row" style="gap:8px">
+        <select data-itype="${n}" style="max-width:150px">
+          <option value="question" ${itype === 'question' ? 'selected' : ''}>问题（写给导师）</option>
+          <option value="requirement" ${itype === 'requirement' ? 'selected' : ''}>需求</option>
+          <option value="general" ${itype === 'general' ? 'selected' : ''}>其他</option>
+        </select>
+        <input type="text" data-ititle="${n}" placeholder="子项标题，如：确认需求文档" style="flex:1" value="${esc((data && data.title) || '')}">
+        <button class="btn sm" data-rowdel="${n}">删</button>
+      </div>
+      <textarea data-icontent="${n}" rows="2" placeholder="说明：要回答的问题 / 需求要点 / 要做的事" style="margin-top:6px">${esc((data && data.content) || '')}</textarea>`;
+    div.querySelector('[data-rowdel]').onclick = () => div.remove();
+    rows.appendChild(div);
+  };
+  const addBtn = document.getElementById('add-item');
+  if (addBtn) { addBtn.onclick = addItemRow; addItemRow(); }
+
+  const aiBtn = document.getElementById('t-ai-btn');
+  if (aiBtn) aiBtn.onclick = async () => {
+    const desc = document.getElementById('t-ai').value.trim();
+    if (!desc) { toast('请先粘贴需求描述'); return; }
+    aiBtn.disabled = true;
+    aiBtn.textContent = '生成中…';
+    const r = await post('/api/tasks/ai-draft', { description: desc });
+    aiBtn.disabled = false;
+    aiBtn.textContent = '✨ AI 起草';
+    if (r.error) { toast(r.error); return; }
+    const dr = r.draft || {};
+    document.getElementById('t-title').value = dr.title || '';
+    document.getElementById('t-desc').value = dr.description || '';
+    if (rows) rows.innerHTML = '';
+    rowN = 0;
+    (dr.items || []).forEach(it => addItemRow(it));
+    toast(r.mode === 'llm' ? 'AI 草稿已填入，请检查修改后发布' : '已按行拆成草稿（未接大模型），请修改后发布');
+  };
+
+  const tSubmit = document.getElementById('t-submit');
+  if (tSubmit) tSubmit.onclick = async () => {
+    const fd = new FormData();
+    fd.append('user', state.user);
+    fd.append('title', document.getElementById('t-title').value);
+    fd.append('description', document.getElementById('t-desc').value);
+    fd.append('assignee', document.getElementById('t-assignee').value);
+    for (const f of document.getElementById('t-files').files) fd.append('files', f);
+    document.querySelectorAll('[data-ititle]').forEach(inp => {
+      const n = inp.dataset.ititle;
+      fd.append('item_title_' + n, inp.value);
+      const tsel = document.querySelector('[data-itype="' + n + '"]');
+      fd.append('item_itype_' + n, tsel ? tsel.value : 'general');
+      const cta = document.querySelector('[data-icontent="' + n + '"]');
+      fd.append('item_content_' + n, cta ? cta.value : '');
+    });
+    const r = await postForm('/api/tasks', fd);
+    toast(r.error ? r.error : '任务已发布');
+    if (!r.error) render();
+  };
+
+  document.querySelectorAll('[data-fb]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.fb;
+      const fd = new FormData();
+      fd.append('user', state.user);
+      fd.append('task_id', btn.dataset.task);
+      fd.append('item_id', id);
+      fd.append('content', document.getElementById('fb-text-' + id).value);
+      for (const f of document.getElementById('fb-files-' + id).files) fd.append('files', f);
+      const r = await postForm('/api/tasks/feedback', fd);
+      toast(r.error ? r.error : '反馈已提交');
+      if (!r.error) render();
+    };
+  });
+  document.querySelectorAll('[data-confirm]').forEach(btn => {
+    btn.onclick = async () => {
+      const note = prompt('导师点评（可留空）：') || '';
+      const r = await post('/api/feedback/confirm', { id: +btn.dataset.confirm, note });
+      toast(r.error ? r.error : '已确认');
+      if (!r.error) render();
+    };
+  });
+  document.querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('删除这个任务及其全部子项、反馈与附件？')) return;
+      const r = await post('/api/tasks/delete', { id: +btn.dataset.del });
+      toast(r.error ? r.error : '已删除');
+      if (!r.error) render();
+    };
+  });
+}
+
+/* ---------------------------------------------------------------- 视图：周报 */
+
+async function viewWeekly() {
+  const [mine, all] = await Promise.all([
+    get('/api/weekly?user=' + encodeURIComponent(state.user)),
+    get('/api/weekly/all'),
+  ]);
+  const mineList = mine.mine || [];
+  const allList = all.all || [];
+
+  const itemHtml = (i) => `<div class="kv" style="align-items:flex-start">
+    <b>${esc(i.name)} · ${i.score}/5</b>
+    <span>${esc(i.reason || '—')}</span></div>`;
+
+  const mineHtml = mineList.map(r => `
+    <details class="card" style="margin-top:10px">
+      <summary style="cursor:pointer;padding:10px 14px">
+        <b>${esc(r.week_label)}</b>
+        <span class="tag ${r.score >= 80 ? 'ok' : r.score >= 60 ? 'warn' : 'bad'}">${r.score != null ? r.score + ' 分' : '未评分'}</span>
+        <span class="muted small">${esc(r.created_at)}</span></summary>
+      <div class="card-body">
+        <div class="md">${md(r.content)}</div>
+        ${(r.review && r.review.items) ? `<div style="margin-top:10px">${r.review.items.map(itemHtml).join('')}</div>` : ''}
+      </div>
+    </details>`).join('');
+
+  const allHtml = allList.slice(0, 30).map(r => `
+    <div class="kv" style="align-items:flex-start">
+      <b>${esc(r.user_name)}</b>
+      <span>${esc(r.week_label)}
+        <span class="tag ${r.score >= 80 ? 'ok' : r.score >= 60 ? 'warn' : 'bad'}">${r.score != null ? r.score + ' 分' : '—'}</span>
+        <details style="margin-top:4px"><summary class="small muted" style="cursor:pointer">查看内容</summary>
+          <div class="md" style="margin-top:6px">${md(r.content)}</div></details>
+      </span>
+    </div>`).join('');
+
+  const composeCard = ROLE === 'newcomer' ? `
+    <div class="card"><div class="card-head"><h3>写本周周报</h3>
+        <span class="muted small">提交后按周报标准自动批改，并计入成长记录</span></div>
+      <div class="card-body">
+        <div><label class="small muted">周次（留空自动按当前周编号）</label>
+          <input type="text" id="w-label" placeholder="如：2026 年第 41 周"></div>
+        <div style="margin-top:10px"><label class="small muted">周报内容</label>
+          <textarea id="w-content" rows="7"
+            placeholder="建议结构：① 本周完成了什么（结果 + 数据）② 遇到什么问题、怎么处理的 ③ 下周计划"></textarea></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="w-submit">提交周报</button>
+        </div>
+        <div id="w-result" style="margin-top:12px"></div>
+      </div></div>` : '';
+  return `${composeCard}
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3>我的周报历史</h3>
+        <span class="muted small">${mineList.length} 篇</span></div>
+      <div class="card-body">${mineHtml || '<div class="muted small">还没有提交过周报</div>'}</div></div>
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3>全员周报</h3>
+        <span class="muted small">最近 ${Math.min(30, allList.length)} 篇</span></div>
+      <div class="card-body">${allHtml || '<div class="muted small">暂无</div>'}</div></div>`;
+}
+
+function bindWeekly() {
+  const wSubmit = document.getElementById('w-submit');
+  if (wSubmit) wSubmit.onclick = async () => {
+    const content = document.getElementById('w-content').value.trim();
+    if (!content) { toast('周报内容不能为空'); return; }
+    const box = document.getElementById('w-result');
+    box.innerHTML = '<span class="spinner"></span> 正在提交并批改…';
+    const r = await post('/api/weekly', {
+      user: state.user,
+      content,
+      week_label: document.getElementById('w-label').value.trim(),
+    });
+    if (r.error) { box.innerHTML = `<div class="hint bad">${esc(r.error)}</div>`; return; }
+    const rv = r.review || {};
+    box.innerHTML = `
+      <div class="row" style="align-items:center;gap:16px">
+        ${r.score != null ? ring(r.score) : ''}
+        <div><div style="font-weight:650">已存档 · ${esc(r.week_label)}</div>
+          <div class="muted small">批改方式：${r.mode === 'llm' ? '大模型' : r.mode === 'heuristic' ? '本地启发式' : '无'}${rv.summary ? ' · ' + esc(rv.summary) : ''}</div></div>
+      </div>
+      ${(rv.items || []).map(i => `<div class="kv" style="align-items:flex-start">
+        <b>${esc(i.name)} · ${i.score}/5</b><span>${esc(i.reason || '—')}</span></div>`).join('')}`;
+    render();
   };
 }
 
 /* ---------------------------------------------------------------- 渲染 */
 
 const VIEWS = {
-  ask: [viewAsk, bindAsk], path: [viewPath, bindPath], coach: [viewCoach, bindCoach],
-  review: [viewReview, bindReview], env: [viewEnv, bindEnv], profile: [viewProfile, () => {}],
+  ask: [viewAsk, bindAsk], tasks: [viewTasks, bindTasks], weekly: [viewWeekly, bindWeekly],
+  path: [viewPath, bindPath], coach: [viewCoach, bindCoach],
+  env: [viewEnv, bindEnv], profile: [viewProfile, () => {}],
   dashboard: [viewDashboard, bindDashboard], kb: [viewKb, bindKb], settings: [viewSettings, bindSettings],
 };
 
@@ -859,29 +1227,102 @@ function renderBadges() {
           : (issues.length ? `<br><span style="color:#c77700">内容文件有 ${issues.length} 条提醒</span>` : ''));
 }
 
+/* ---------------------------------------------------------------- 登录（可选身份保护） */
+
+function showLogin(msg, prefUser) {
+  const mask = document.getElementById('login-mask');
+  if (!mask) return;
+  const users = ((state.meta && state.meta.users) || [])
+    .filter(u => (u.role || 'newcomer') === ROLE);   // 登录页只出现本端角色的账号
+  const sel = document.getElementById('login-user');
+  sel.innerHTML = users.map(u =>
+    `<option value="${esc(u.id)}">${esc(u.name)}（${ROLE === 'mentor' ? '导师' : esc(u.track || '通用')}）</option>`).join('');
+  if (prefUser) sel.value = prefUser;
+  document.getElementById('login-msg').textContent =
+    msg || (ROLE === 'mentor' ? '请选择导师账号并输入 PIN' : '请选择新人账号并输入 PIN');
+  document.getElementById('login-pin').value = '';
+  mask.classList.remove('hidden');
+  setTimeout(() => document.getElementById('login-pin').focus(), 60);
+}
+
+async function doLogin() {
+  const user = document.getElementById('login-user').value;
+  const pin = document.getElementById('login-pin').value.trim();
+  const r = await post('/api/login', { user, pin });
+  if (r.error) {
+    document.getElementById('login-msg').textContent = r.error;
+    return;
+  }
+  if ((r.user.role || 'newcomer') !== ROLE) {
+    document.getElementById('login-msg').textContent =
+      ROLE === 'mentor' ? '这是新人账号，请回新人端登录' : '这是导师账号，请去导师端登录';
+    return;
+  }
+  state.token = r.token;
+  state.user = r.user.id;
+  localStorage.setItem('mentor.token', state.token);
+  localStorage.setItem('mentor.user', state.user);
+  document.getElementById('login-mask').classList.add('hidden');
+  toast('欢迎，' + r.user.name);
+  state.chat = []; state.coach = null;
+  await boot();
+}
+
 async function boot() {
   state.meta = await get('/api/meta');
   if (state.meta.error) {
     document.getElementById('view').innerHTML = '<div class="hint bad">无法连接后端：' + esc(state.meta.error) + '</div>';
     return;
   }
-  const sel = document.getElementById('user-select');
   const users = state.meta.users || [];
-  if (!users.find(u => u.id === state.user)) state.user = users.length ? users[0].id : 'demo';
-  sel.innerHTML = users.map(u =>
-    `<option value="${esc(u.id)}" ${u.id === state.user ? 'selected' : ''}>${esc(u.name)}（${esc(u.track || '通用')}）</option>`).join('');
-  sel.onchange = () => {
-    state.user = sel.value;
-    localStorage.setItem('mentor.user', state.user);
-    state.chat = []; state.coach = null;
-    toast('已切换到 ' + sel.options[sel.selectedIndex].text);
-    render();
-  };
+  const me = users.find(u => u.id === state.user);
+  const sel = document.getElementById('user-select');
+  const whoEl = document.getElementById('whoami');
+  const outEl = document.getElementById('logout-btn');
+  const openEl = document.getElementById('identity-open');
+  if (state.meta.auth_required) {
+    // 双端分离：token 对应的账号必须与本端角色一致，否则视为未登录
+    if (!state.token || !me || (me.role || 'newcomer') !== ROLE) {
+      if (state.token) { state.token = ''; localStorage.removeItem('mentor.token'); }
+      showLogin();
+      return;
+    }
+    if (whoEl && outEl && openEl) {
+      whoEl.textContent = me.name + '（' + (me.role === 'mentor' ? '导师' : '新人') + '）';
+      whoEl.classList.remove('hidden');
+      outEl.classList.remove('hidden');
+      openEl.style.display = 'none';
+      outEl.onclick = async () => {
+        try { await post('/api/logout', {}); } catch (e) {}
+        state.token = '';
+        localStorage.removeItem('mentor.token');
+        state.chat = []; state.coach = null;
+        showLogin('已退出，请重新登录');
+      };
+    }
+  } else if (sel) {
+    // 开放模式（users.json 里没人配 pin）：保留自由切换
+    if (!me) state.user = users.length ? users[0].id : 'demo';
+    sel.innerHTML = users.map(u =>
+      `<option value="${esc(u.id)}" ${u.id === state.user ? 'selected' : ''}>${esc(u.name)}（${esc(u.track || '通用')}）</option>`).join('');
+    sel.onchange = () => {
+      state.user = sel.value;
+      localStorage.setItem('mentor.user', state.user);
+      state.chat = []; state.coach = null;
+      toast('已切换到 ' + sel.options[sel.selectedIndex].text);
+      render();
+    };
+  }
   document.querySelectorAll('.nav-item').forEach(b => {
     b.onclick = () => { state.view = b.dataset.view; render(); };
   });
   renderBadges();
   render();
 }
+
+document.getElementById('login-btn').onclick = doLogin;
+document.getElementById('login-pin').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
 
 boot();

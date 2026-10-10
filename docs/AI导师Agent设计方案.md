@@ -128,7 +128,8 @@ AI 扮演"客户 / 评审人 / 面试官 / 事故中的老板"，多轮对话，
  │      HARD（薪资/人事/法务/社保）──► 无条件转人工，知识库有也不答
  │      SOFT（权限/生产库/密钥/报销）─► 知识库有强匹配就照文档答 + 附敏感提醒；
  │                                     知识库没有才转人工
- └─ 6. 记录：命中 FAQ 则 hits+1；未命中则进入沉淀候选池
+ └─ 6. 记录：命中 FAQ 则 hits+1（计数存运行数据 SQLite，不写内容文件）；
+ │         未命中则进入沉淀候选池
 ```
 
 **为什么敏感话题要分两档？**
@@ -238,7 +239,7 @@ AI 扮演"客户 / 评审人 / 面试官 / 事故中的老板"，多轮对话，
 │  └── core.py                                                      │
 │      ├── Config     路径、阈值、LLM 配置                            │
 │      ├── Store      SQLite：用户、问答记录、进度、成绩、沉淀候选       │
-│      ├── KB         知识条目 + FAQ 加载、BM25 检索、出处回溯          │
+│      ├── KB         知识条目 + FAQ 加载、TF-IDF 检索、出处回溯        │
 │      ├── LLM         可选适配（OpenAI 兼容 / 未配置时降级）           │
 │      └── agents.py  八个模块的业务逻辑                              │
 └───────────────────────────────┬──────────────────────────────────┘
@@ -294,7 +295,6 @@ source: 内部 Wiki / 工程规范 v2
       "review_date": "2026-06-30",
       "source": "IT 手册",
       "status": "published",
-      "hits": 0,
       "created_by": "seed"
     }
   ]
@@ -302,6 +302,9 @@ source: 内部 Wiki / 工程规范 v2
 ```
 
 `status`：`published`（进入检索池）｜`draft`（待导师确认）｜`escalated`（转人工记录）
+
+> 命中次数（旧版写在 `hits` 字段）现在由系统自动统计，存放在运行数据 SQLite 里，
+> 不再写回 `faq.json`——内容文件的 git diff 保持干净，只反映导师的手工修改。
 
 ### 7.3 关卡地图 `data/paths/*.json`
 
@@ -406,7 +409,8 @@ source: 内部 Wiki / 工程规范 v2
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/meta` | 轨道、能力维度、用户列表、LLM 状态 |
+| GET | `/api/meta` | 轨道、能力维度、用户列表、LLM 状态（含 auth_required 标志） |
+| POST | `/api/login` | 可选身份保护：选人 + PIN 登录，返回 token |
 | POST | `/api/ask` | 提问 → 答案 + 出处 + 是否转人工 |
 | GET | `/api/kb?q=` | 知识库检索 |
 | GET | `/api/kb/{id}` | 知识条目详情 |
@@ -424,6 +428,11 @@ source: 内部 Wiki / 工程规范 v2
 | POST | `/api/faq/draft` | 把未答问题转成草稿 |
 | POST | `/api/faq/publish` | 确认发布 FAQ |
 | GET/POST | `/api/settings` | 查看/保存 LLM 配置 |
+
+> **可选身份保护**：`users.json` 里只要有用户配置了 4 位 `pin`，除 `/api/health`、
+> `/api/meta`、`/api/login` 外的所有接口都要求 `X-Token` 请求头（登录后发放），
+> 且校验「登录身份 = 请求里的 user」，防止冒用他人身份交考试、写档案；
+> 一个 pin 都没配时全站完全开放，零配置即用。会话存 SQLite，改 pin 立即生效、无需重启。 |
 
 ---
 
@@ -567,6 +576,6 @@ need = 1.6  当 覆盖率 <  0.30
 | `ai-mentor/core.py` | 配置 / 存储 / 检索 / 模型适配 / 内容校验 |
 | `ai-mentor/agents.py` | 八个模块的业务逻辑 |
 | `ai-mentor/check_data.py` | 内容文件校验 |
-| `ai-mentor/smoke_test.py` | 49 项端到端测试（可重复运行） |
+| `ai-mentor/smoke_test.py` | 80 项端到端测试（可重复运行，含双端登录、求助闭环、任务子项、项目知识库链路） |
 | `ai-mentor/web/` | 前端（原生 HTML/CSS/JS，无构建） |
 | `ai-mentor/data/` | 8 条知识 / 20 条 FAQ / 2 套关卡 / 4 套评分标准 / 6 个陪练场景 / 3 套自检 |
